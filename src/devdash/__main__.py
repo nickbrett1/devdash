@@ -14,7 +14,7 @@ def main(argv=None):
     cfg = config.load()
     parser = argparse.ArgumentParser(prog="devdash", description=__doc__)
     parser.add_argument("--host", default=None, help="bind address (default: tailnet IP, else 127.0.0.1)")
-    parser.add_argument("--port", type=int, default=None, help="port (default: %d)" % config.DEFAULT_PORT)
+    parser.add_argument("--port", type=int, default=None, help=f"port (default: {config.DEFAULT_PORT})")
     parser.add_argument("--token", action="store_true", help="print the token and exit")
     args = parser.parse_args(argv)
 

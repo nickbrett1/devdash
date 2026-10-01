@@ -9,9 +9,8 @@ import datetime as dt
 import os
 import subprocess
 
-from devreap import buildkite, containers
+from devreap import buildkite, containers, vscode
 from devreap import config as reap_config
-from devreap import vscode
 
 # The last-human-build lookup is one HTTP call per project, and the UI
 # refreshes. Six projects on a 5-minute TTL is cheaper than the same six on
@@ -25,7 +24,7 @@ def _parse_iso(value):
     if not value:
         return None
     try:
-        return dt.datetime.strptime(value[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=dt.timezone.utc)
+        return dt.datetime.strptime(value[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=dt.UTC)
     except ValueError:
         return None
 
@@ -53,7 +52,7 @@ def _last_build(org, slug, token, now):
     """(days, label) for the last human build, cached, never fatal."""
     key = (org, slug)
     hit = _build_cache.get(key)
-    if hit and (dt.datetime.now(dt.timezone.utc) - hit[0]).total_seconds() < _BUILD_TTL:
+    if hit and (dt.datetime.now(dt.UTC) - hit[0]).total_seconds() < _BUILD_TTL:
         return hit[1], hit[2]
     days, label = None, None
     if token:
@@ -64,7 +63,7 @@ def _last_build(org, slug, token, now):
         if last:
             days = _age_days(_parse_iso(last["created_at"]), now)
             label = f"#{last['number']} ({last['author']}, {last['branch']})"
-    _build_cache[key] = (dt.datetime.now(dt.timezone.utc), days, label)
+    _build_cache[key] = (dt.datetime.now(dt.UTC), days, label)
     return days, label
 
 
@@ -72,7 +71,7 @@ def rows(now=None, probe_builds=True):
     """One dict per project, sorted by name. Read-only: no container is
     started, stopped or otherwise touched."""
     cfg = reap_config.load()
-    now = now or dt.datetime.now(dt.timezone.utc)
+    now = now or dt.datetime.now(dt.UTC)
     token = cfg.get("buildkite_token") or os.environ.get("BUILDKITE_API_TOKEN") or ""
     org = cfg.get("buildkite_org") or "nick-brett"
     workspaces_dir = os.path.expanduser(cfg.get("workspaces_dir") or "")
@@ -90,6 +89,15 @@ def rows(now=None, probe_builds=True):
     # One System Events call for the whole list. A failure here (no
     # Accessibility grant, no GUI session) must degrade, not 500.
     open_windows, window_error = vscode.windows_for(list(paths.values()))
+
+    # A second, deliberately separate call. System Events answers "[]" both
+    # when no window is open *and* when the Accessibility grant is missing, so
+    # an all-false window column cannot tell those apart. The raw count of
+    # titles it can see is the one number that makes a silently lost grant
+    # obvious: it drops to 0 while windows are demonstrably open. Nothing acts
+    # on window state in M1, so a count that is a few milliseconds stale
+    # relative to the set above is harmless.
+    titles, _ = vscode.list_window_titles()
 
     out = []
     for name in sorted(paths):
@@ -113,7 +121,7 @@ def rows(now=None, probe_builds=True):
             "last_human_build_days": days,
             "last_build": label,
         })
-    return out, {"window_error": window_error}
+    return out, {"window_error": window_error, "window_titles": len(titles)}
 
 
 # --------------------------------------------------------------------------
@@ -139,7 +147,8 @@ def _mem_bytes(text):
 
 
 def _docker(args, timeout=30):
-    return subprocess.run([containers.DOCKER] + args, capture_output=True, text=True, timeout=timeout)
+    return subprocess.run([containers.DOCKER] + args, capture_output=True, text=True,
+                          timeout=timeout, check=False)
 
 
 def status(devcontainer_ids=None):

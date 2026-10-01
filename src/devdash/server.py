@@ -13,12 +13,12 @@ Two rules this file exists to enforce:
 
 import hmac
 import json
-import secrets
+from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import config, projects
+from . import projects
 
 COOKIE = "devdash_token"
 HEALTH_BODY = b'{"status": "ok"}'
@@ -114,7 +114,7 @@ class Handler(SimpleHTTPRequestHandler):
             if path == "/api/status":
                 self._send_json(projects.status())
                 return
-        except Exception as e:  # a broken join must not look like a dead server
+        except Exception as e:  # noqa: BLE001 — a broken join must not look like a dead server
             self._send_json({"error": f"{type(e).__name__}: {e}"}, status=500)
             return
 
@@ -123,10 +123,10 @@ class Handler(SimpleHTTPRequestHandler):
     def _serve_static(self):
         if self.root is None or not self.root.is_dir():
             body = (
-                "devdash API is up, but the frontend has not been built.\n\n"
-                "  cd web && npm install && npm run build\n\n"
-                "API: /api/projects, /api/status, /healthz\n"
-            ).encode()
+                b"devdash API is up, but the frontend has not been built.\n\n"
+                b"  cd web && npm install && npm run build\n\n"
+                b"API: /api/projects, /api/status, /healthz\n"
+            )
             self.send_response(200)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -142,8 +142,14 @@ class Handler(SimpleHTTPRequestHandler):
 def serve(host, port, token, root):
     Handler.token = token or ""
     Handler.root = root
+    # SimpleHTTPRequestHandler serves relative to its `directory`, NOT the cwd
+    # and not Handler.root — without this it happily lists the whole repository
+    # (and, under launchd, whatever directory launchd started it in). The class
+    # is built by the server as RequestHandlerClass(request, address, server),
+    # so the directory is bound with a partial.
+    handler = partial(Handler, directory=str(root)) if root is not None else Handler
     # Threading matters: /api/projects shells out to docker per project, and a
     # single-threaded server would freeze the phone on the first poll.
-    httpd = ThreadingHTTPServer((host, port), Handler)
+    httpd = ThreadingHTTPServer((host, port), handler)
     httpd.daemon_threads = True
     return httpd

@@ -113,6 +113,22 @@ and `~/DevOpen/devreap`. Overlay editable installs on top of the pins:
 .venv/bin/pip install -e ~/DevOpen/devopen -e ~/DevOpen/devreap
 ```
 
+### Re-pinning a tag
+
+Bumping `@v0.1.1` → `@v0.1.2` in `pyproject.toml` and running
+`pip install -e .` does **nothing**: pip sees the distribution name already
+satisfied and leaves the old commit installed. Install the ref explicitly,
+then confirm what you got:
+
+```bash
+.venv/bin/pip install --force-reinstall --no-deps \
+    "devreap @ git+https://github.com/nickbrett1/devreap@v0.1.2"
+.venv/bin/pip freeze | grep devreap   # shows the commit the tag resolved to
+```
+
+Symptoms of forgetting this are an `AttributeError` for a function you can see
+in the checkout, or a `TypeError` for one whose signature you just changed.
+
 Run the venv on **`/opt/homebrew/bin/python3.14`** and nothing else. Closing a
 VS Code window goes through System Events, and macOS grants Accessibility to
 the *interpreter* — specifically to `realpath(sys.executable)`. That Homebrew

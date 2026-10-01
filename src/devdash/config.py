@@ -72,7 +72,8 @@ def tailnet_ip():
     import subprocess
     for exe in ("/usr/local/bin/tailscale", "/opt/homebrew/bin/tailscale", "tailscale"):
         try:
-            r = subprocess.run([exe, "ip", "-4"], capture_output=True, text=True, timeout=10)
+            r = subprocess.run([exe, "ip", "-4"], capture_output=True, text=True,
+                               timeout=10, check=False)
         except (OSError, subprocess.SubprocessError):
             continue
         if r.returncode == 0 and r.stdout.strip():

@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.nickbrett1.devdash</string>
+  <!-- `python -m devdash` from the venv install.py built on the
+       Accessibility-granted Homebrew python3.14. Not /usr/local/bin/devdash:
+       there is no console script, deliberately — a pip install must never be
+       able to shadow a shim. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>__DEVDASH_PYTHON__</string>
+    <string>-m</string>
+    <string>devdash</string>
+  </array>
+  <!-- load()/bind_host() resolve web_dir against the repo root, so the cwd
+       matters less than it does for devreap — but set it anyway so relative
+       paths and any stack trace point somewhere sensible. -->
+  <key>WorkingDirectory</key>
+  <string>__DEVDASH_DIR__</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <!-- Unlike devreap's nightly job, this is a server: keep it up. Throttle so a
+       crash (port already bound, say) cannot spin the machine. -->
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <!-- The user taps a button on a phone and waits; do not let App Nap and
+       background throttling answer late. -->
+  <key>ProcessType</key>
+  <string>Interactive</string>
+  <key>StandardOutPath</key>
+  <string>__DEVDASH_LOG__</string>
+  <key>StandardErrorPath</key>
+  <string>__DEVDASH_LOG__</string>
+  <!-- launchd gives an agent the bare PATH /usr/bin:/bin:/usr/sbin:/sbin, which
+       has neither /usr/local/bin (docker) nor /opt/homebrew/bin (node, python3,
+       tailscale). Without this the server starts but /api/projects dies with
+       "docker is not reachable". -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>__DEVDASH_PATH__</string>
+  </dict>
+</dict>
+</plist>
