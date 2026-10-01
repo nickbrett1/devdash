@@ -303,7 +303,7 @@ describe("open and close", () => {
     expect(await screen.findByRole("button", { name: "Open" })).toBeInTheDocument();
   });
 
-  it("hides Open entirely while the screen is locked", async () => {
+  it("hides Open for a running container while the screen is locked", async () => {
     // Every window reads as closed while the screen is locked, so devdash
     // cannot tell whether one is already open — it declines to guess rather
     // than stack a second window nobody can see.
@@ -313,11 +313,18 @@ describe("open and close", () => {
     expect(screen.queryByRole("button", { name: "Open" })).not.toBeInTheDocument();
   });
 
-  it("says why an absent project has no button while locked", async () => {
+  it("keeps Open for a stopped project while the screen is locked", async () => {
+    // Nothing is running, so there is no window to duplicate. This is the case
+    // that matters: opening a project from a phone while the Mac is locked.
+    stubAction(project({ state: "stopped" }), {}, 200, true);
+    render(Page);
+    expect(await screen.findByRole("button", { name: "Open" })).toBeInTheDocument();
+  });
+
+  it("keeps Open for an absent project while the screen is locked", async () => {
     stubAction(project({ state: "absent", container: null }), {}, 200, true);
     render(Page);
-    expect(await screen.findByText("Open hidden — screen locked")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Open" })).not.toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Open" })).toBeInTheDocument();
   });
 
   it("offers only Open for a project with no container", async () => {

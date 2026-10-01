@@ -271,12 +271,15 @@ would only re-focus something the user is already looking at, so the row offers
 `Close` alone. It comes back for a stopped container that still has a stale
 window, where reopening is the point.
 
-`Open` is also hidden entirely while `screen_locked` is true. Every window
-reads as closed then, open or not, so the button would be a guess — and the
-wrong guess stacks a second window on a Mac nobody can see. An absent project
-(which has no other button) says *"Open hidden — screen locked"* in its place,
-so the empty row reads as a decision rather than a rendering failure. Unlock and
-the button returns on the next poll.
+A *running* container is also stripped of `Open` while `screen_locked` is
+true. Every window reads as closed then, open or not, so the button would be a
+guess — and the wrong guess stacks a second window on a Mac nobody can see.
+
+`Open` is only ever withheld from a **running** container, though, because a
+second window is the only thing it can get wrong. A stopped or absent project
+has no container to duplicate, so the button always stands — including while
+the screen is locked, which is exactly when reaching a project from a phone is
+the point. Unlock and the running rows get their button back on the next poll.
 
 ### Jobs
 

@@ -19,14 +19,16 @@
 	// strip says so instead of showing a confident "0".
 	let screenLocked = $state(false);
 
-	// Open reuses a running container and puts a window on the Mac, so it is
-	// pointless once devdash can already see that window — and unanswerable
-	// while the screen is locked, when every window reads as closed whether or
-	// not it is. Rather than offer it on a guess (and risk stacking a second
-	// window nobody can see), it is hidden in both cases.
+	// Open puts a window on the Mac, so the only thing it can get wrong is
+	// adding a second one. A stopped or absent project has no container, so
+	// there is nothing to duplicate and the button always stands — including
+	// while the screen is locked, which is exactly when opening from a phone is
+	// the point. A *running* container is the case to be careful with: hide it
+	// if devdash can see the window, and hide it while the screen is locked,
+	// when every window reads as closed whether or not it is.
 	function canOpen(p) {
-		if (screenLocked) return false;
-		return p.state !== 'running' || !p.window_open;
+		if (p.state !== 'running') return true;
+		return !screenLocked && !p.window_open;
 	}
 	let error = $state('');
 	let loading = $state(true);
@@ -358,19 +360,13 @@
 
 					<div class="actions">
 						{#if p.state === 'absent'}
-							{#if canOpen(p)}
-								<button
-									class="wide"
-									disabled={isRunning(p.name)}
-									onclick={() => startJob(`/api/projects/${encodeURIComponent(p.name)}/open`, {}, p.name)}
-								>
-									{isRunning(p.name) ? 'Opening…' : 'Open'}
-								</button>
-							{:else}
-								<!-- The one row type with no other button, so say why it is empty
-								     rather than leaving it looking broken. -->
-								<span class="suppressed">Open hidden — screen locked</span>
-							{/if}
+							<button
+								class="wide"
+								disabled={isRunning(p.name)}
+								onclick={() => startJob(`/api/projects/${encodeURIComponent(p.name)}/open`, {}, p.name)}
+							>
+								{isRunning(p.name) ? 'Opening…' : 'Open'}
+							</button>
 						{:else}
 							<button
 								disabled={!!busy[p.name]}
@@ -646,13 +642,6 @@
 		flex-wrap: wrap;
 		gap: 0.5rem;
 		margin-top: 0.6rem;
-	}
-	/* Stands in for a button that is deliberately withheld, so an empty action
-	   row reads as a decision rather than a rendering failure. */
-	.suppressed {
-		align-self: center;
-		font-size: 0.8rem;
-		color: #6b7280;
 	}
 	.actions button {
 		min-width: 4.5rem;
