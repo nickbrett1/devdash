@@ -368,13 +368,18 @@
 								{isRunning(p.name) ? 'Opening…' : 'Open'}
 							</button>
 						{:else}
-							<button
-								disabled={!!busy[p.name]}
-								title={p.live_session ? `live: ${p.live_evidence}` : 'stop the container'}
-								onclick={() => act(p.name, 'close')}
-							>
-								{busy[p.name] === 'close' ? 'Closing…' : 'Close'}
-							</button>
+							<!-- Close only where there is something to reclaim. On a stopped
+							     container it would close a leftover window and nothing else —
+							     a button named after RAM, with no RAM to free. -->
+							{#if p.state === 'running'}
+								<button
+									disabled={!!busy[p.name]}
+									title={p.live_session ? `live: ${p.live_evidence}` : 'stop the container'}
+									onclick={() => act(p.name, 'close')}
+								>
+									{busy[p.name] === 'close' ? 'Closing…' : 'Close'}
+								</button>
+							{/if}
 							{#if canOpen(p)}
 								<button
 									disabled={isRunning(p.name)}

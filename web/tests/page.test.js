@@ -269,6 +269,15 @@ describe("open and close", () => {
     expect(screen.getByRole("button", { name: "Open" })).toBeInTheDocument();
   });
 
+  it("offers only Open for a stopped container", async () => {
+    // Close on a stopped container would close a leftover window and nothing
+    // else — named after RAM it cannot free. The window is dealt with by Open.
+    stubAction(project({ state: "stopped", window_open: false }));
+    render(Page);
+    expect(await screen.findByRole("button", { name: "Open" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Close" })).not.toBeInTheDocument();
+  });
+
   it("shows what each running container is using", async () => {
     stubFetch({
       ...PROJECTS,

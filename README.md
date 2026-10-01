@@ -256,6 +256,23 @@ sheet can keep the window open while the RAM is reclaimed either way.
 `close` also means "stop", never "remove": `docker stop` keeps the container
 and its volumes, so `Open` brings the same container straight back.
 
+### Which button a row offers
+
+| state | window | screen | buttons |
+|---|---|---|---|
+| running | hidden | unlocked | `Close` `Open` |
+| running | visible | unlocked | `Close` |
+| running | either | locked | `Close` |
+| stopped | either | either | `Open` |
+| absent | — | either | `Open` |
+
+`Close` appears only on a **running** container, because that is the only row
+with RAM to reclaim. The API still accepts `close` on a stopped container — it
+closes the leftover window and reports `stopped: true` for a stop that had
+nothing to do — but the UI does not offer it: a button named after memory, on a
+row using none, is a promise it cannot keep. A stale window is dealt with by
+`Open`, which starts the container and attaches one anyway.
+
 ### Why `Open` is hidden on a running container that already has a window
 
 `running` and `window_open` are different facts, and the UI keeps them apart: a
