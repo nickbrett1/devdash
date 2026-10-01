@@ -1,6 +1,15 @@
 # devdash
 
-A devdash project generated with genproj
+A phone-sized dashboard for the devcontainers on this machine: which projects
+exist, whether their container is running, which VS Code windows are open, and
+what CI last said about them — plus the two things you actually want from a
+phone, **Open** and **Close**.
+
+It is a stdlib-only Python server (`ThreadingHTTPServer`) serving a static
+SvelteKit build, installed as a launchd LaunchAgent and bound to the tailnet.
+It reuses [devopen](https://github.com/nickbrett1/devopen) to open a project and
+[devreap](https://github.com/nickbrett1/devreap) for the container and
+VS Code-window facts, so it duplicates neither one's config.
 
 ## Capabilities
 
@@ -34,6 +43,38 @@ This project includes the following capabilities:
    ruff check src tests
    pytest -v
    ```
+
+## Install
+
+`install.py` does the whole thing in one shot: it clones or updates the
+checkout, builds a venv on `/opt/homebrew/bin/python3.14`, `pip install -e .`,
+writes `~/.devdash/config.json`, builds the frontend with the pinned npm, and
+loads the LaunchAgent (`launchd/com.nickbrett1.devdash.plist`, `KeepAlive` with
+a `ThrottleInterval` so a crash cannot thrash). Re-run it to update; it is
+idempotent. `uninstall.py` boots the agent out and removes the plist, leaving
+the checkout and the config behind.
+
+It runs standalone, so a fresh Mac needs no clone first:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nickbrett1/devdash/main/install.py | python3
+```
+
+`DEVDASH_PYTHON`, `DEVDASH_HOME`, `DEVDASH_WORKSPACES` and the three
+`DEVDASH_SKIP_*` switches (`UPDATE`, `WEB`, `AGENT`) override the defaults.
+The interpreter matters: macOS grants Accessibility to `realpath(sys.executable)`,
+so the venv is built on the one binary already granted, and the window close
+works under launchd.
+
+The plist carries an explicit `PATH` because launchd hands a job a bare
+environment, and `ProcessType Interactive` so the Accessibility grant that
+window-closing needs is used the same way a foreground app's is. Verify what is
+running with:
+
+```bash
+launchctl list | grep devdash     # label, last exit status, pid
+curl -s http://$(tailscale ip -4):3990/healthz
+```
 
 ## Doppler
 
@@ -161,13 +202,27 @@ M2's Close is still best-effort, but for the ordinary reason — a "save your
 changes?" sheet can block a close — not because the LaunchAgent cannot see
 windows.
 
+## Access
+
+There is no token, cookie or `?token=` URL. devdash binds to the tailnet
+address and nothing else (see `config.bind_host()`: the configured `host`, else
+`tailscale ip -4`, else `127.0.0.1` — never `0.0.0.0`), so the only thing that
+can reach the port is a device on your tailnet. That bind *is* the access
+control, and it is the whole of it: loopback on this host cannot reach the
+server and there are no CORS headers, so a page in a browser has no route in
+either. Bookmark `http://<tailnet-ip>:3990/` on the phone and you are done.
+
+The residual risk is worth stating plainly: any other device on your tailnet
+can reach these routes, including the mutating ones. If that ever matters, the
+fix is an allow-list of tailnet identities, not a shared secret.
+
 ## The API
 
-Read-only, GET, behind the token:
+Read-only, GET:
 
 | Route | Answer |
 | --- | --- |
-| `/healthz` | `{"status":"ok"}` — the one route with no token |
+| `/healthz` | `{"status":"ok"}` |
 | `/api/projects` | the joined rows, plus `window_error` and `window_titles` |
 | `/api/status` | VM memory and container counts |
 | `/api/repos` | repos with no workspace here yet, plus a listing error if any |
@@ -178,8 +233,7 @@ Mutating, POST only — a prefetcher or a back button must not be able to stop a
 container, so no action is reachable by GET:
 
 ```bash
-curl -X POST -H "Authorization: Bearer $TOKEN" \
-     -H 'Content-Type: application/json' -d '{"force":true}' \
+curl -X POST -H 'Content-Type: application/json' -d '{"force":true}' \
      "http://<tailnet-ip>:3990/api/projects/<name>/close"
 ```
 
@@ -206,12 +260,12 @@ build — longer than a phone's HTTP request, or the browser that made it, will
 wait. So they do not answer with an outcome:
 
 ```bash
-curl -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+curl -X POST -H 'Content-Type: application/json' \
      -d '{"repo":"nickbrett1/acme"}' "http://<tailnet-ip>:3990/api/provision"
 # 202 {"job_id":"42c6b745c9a7","kind":"provision","target":"nickbrett1/acme",
 #      "state":"running","log":[], ...}
 
-curl -H "Authorization: Bearer $TOKEN" "http://<tailnet-ip>:3990/api/jobs/42c6b745c9a7"
+curl "http://<tailnet-ip>:3990/api/jobs/42c6b745c9a7"
 # {"state":"failed","error":"ActionError: command failed (128): git clone …",
 #  "log":["Cloning …","remote: Repository not found.", …], "running_for":0.5}
 ```
@@ -237,18 +291,17 @@ picker still has something to show.
 
 `open` hands off to `devopen.open_repo` (as does `provision`, whose only
 difference is that it takes a *repository* rather than a project, because the
-project does not exist yet). It passes `tailscale=False` unconditionally and
-leaves `fresh`/`clean` off unless the body asks for them: every one of
-devopen's prompts is a question a server cannot answer, so it is a parameter
-with a safe default instead.
+project does not exist yet). It registers the container on Tailscale whenever
+devopen's config carries an authkey, and leaves `fresh`/`clean` off unless the
+body asks for them: every one of devopen's prompts is a question a server
+cannot answer, so it is a parameter with a safe default instead.
 
 ## On a phone
 
 The page is installable (a manifest, a `standalone` display mode and an
 apple-touch icon in `web/static`), pulls to refresh, and keeps every control at
-the 44 px minimum. The manifest is fetched same-origin, so the browser sends
-the token cookie with it and `start_url: "/"` keeps the secret out of the
-installed app's URL — the cookie is the credential.
+the 44 px minimum. The manifest is fetched same-origin, so `start_url: "/"`
+keeps the installed app pointed at the same tailnet URL you opened.
 
 Each running project carries a **Blink** link, built as
 `blink://host/?host=<project>&username=<remoteUser>&port=22`. devopen registers
