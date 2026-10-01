@@ -1,10 +1,17 @@
 [project]
 name = "devdash"
 version = "0.1.0"
-description = "A devdash project generated with genproj"
+description = "Open and close devcontainers on the Mac from a browser — a front end over devopen and devreap"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    # Pinned to tags, not branches: a push to devopen or devreap must never
+    # move devdash underneath itself. Re-lock (and re-install) deliberately
+    # when a new tag is cut. For local development against the checkouts in
+    # ~/DevOpen, overlay editable installs — see README "Dependencies".
+    "devopen @ git+https://github.com/nickbrett1/devopen@v0.1.0",
+    "devreap @ git+https://github.com/nickbrett1/devreap@v0.1.0",
+]
 
 [project.optional-dependencies]
 dev = [
