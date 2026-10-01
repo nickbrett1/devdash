@@ -16,12 +16,28 @@ import json
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
-from . import projects
+from . import actions, projects
 
 COOKIE = "devdash_token"
 HEALTH_BODY = b'{"status": "ok"}'
+
+_TRUTHY = ("1", "true", "on", "yes")
+
+
+def _flag(key, body, query, default=False):
+    """A boolean request parameter, from the JSON body or the query string.
+
+    Absent means `default` — for `force` that is False, which is the whole
+    point: the live-session veto is what happens when nobody said otherwise.
+    """
+    if key in body:
+        value = body[key]
+        return value if isinstance(value, bool) else str(value).lower() in _TRUTHY
+    if key in query:
+        return str(query[key][0]).lower() in _TRUTHY
+    return default
 
 
 def web_root(cfg):
@@ -119,6 +135,60 @@ class Handler(SimpleHTTPRequestHandler):
             return
 
         self._serve_static()
+
+    def do_POST(self):
+        """The only mutating surface, and therefore never reachable without
+        the token and never a GET: a link prefetcher or a phone's back button
+        must not be able to stop a container."""
+        if not self._authorised():
+            self._unauthorised()
+            return
+
+        parsed = urlparse(self.path)
+        path = parsed.path.rstrip("/")
+        parts = [unquote(p) for p in path.split("/") if p]
+        # /api/projects/<name>/{open,close}
+        if len(parts) != 4 or parts[:2] != ["api", "projects"] or parts[3] not in ("open", "close"):
+            self._send_json({"error": "not found"}, status=404)
+            return
+
+        name, verb = parts[2], parts[3]
+        body = self._json_body()
+        query = parse_qs(parsed.query)
+        try:
+            if verb == "close":
+                result = actions.close_project(name, force=_flag("force", body, query))
+            else:
+                result = actions.open_project(
+                    name,
+                    fresh=_flag("fresh", body, query, default=None),
+                    clean=_flag("clean", body, query, default=None),
+                )
+        except actions.ActionError as e:
+            self._send_json({"error": str(e), "name": name}, status=400)
+            return
+        except Exception as e:  # noqa: BLE001 — a crashed action is a 500, not a dead server
+            self._send_json({"error": f"{type(e).__name__}: {e}", "name": name}, status=500)
+            return
+        # A refusal is a successful request that declined to act, so it is a
+        # 200 the UI can render — not an error it has to interpret.
+        self._send_json(result)
+
+    def _json_body(self):
+        """The request body as a dict. An unparseable body is {} — every field
+        is optional and defaults to the safe side, and a phone is as likely to
+        POST nothing as to POST anything."""
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return {}
+        if length <= 0:
+            return {}
+        try:
+            data = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return {}
+        return data if isinstance(data, dict) else {}
 
     def _serve_static(self):
         if self.root is None or not self.root.is_dir():

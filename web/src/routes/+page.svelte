@@ -13,6 +13,13 @@
 	let error = $state('');
 	let loading = $state(true);
 	let updated = $state(null);
+	// Per-project action state, keyed by name. `busy[name]` is the verb in
+	// flight (so both buttons can disable and only the tapped one spins);
+	// `note[name]` is the last answer, including a refusal; `offer[name]` is a
+	// refusal the user may override.
+	let busy = $state({});
+	let note = $state({});
+	let offer = $state({});
 
 	async function load() {
 		try {
@@ -47,6 +54,47 @@
 		const timer = setInterval(load, REFRESH_MS);
 		return () => clearInterval(timer);
 	});
+
+	async function act(name, verb, extra = {}) {
+		busy = { ...busy, [name]: verb };
+		note = { ...note, [name]: null };
+		offer = { ...offer, [name]: false };
+		try {
+			const res = await fetch(`/api/projects/${encodeURIComponent(name)}/${verb}`, {
+				method: 'POST',
+				credentials: 'same-origin',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(extra)
+			});
+			const body = await res.json().catch(() => ({}));
+			if (res.status === 401) {
+				error = 'Not authorised. Open this page once with ?token=… and the browser will keep a cookie.';
+				return;
+			}
+			if (!res.ok) {
+				note = { ...note, [name]: { ok: false, text: body.error || `HTTP ${res.status}` } };
+				return;
+			}
+			// A refusal arrives as a 200: the request succeeded, it just
+			// declined to act. Offer the override rather than re-deciding for
+			// the user.
+			if (body.refused) {
+				note = { ...note, [name]: { ok: false, text: body.detail } };
+				offer = { ...offer, [name]: true };
+				return;
+			}
+			const bits = [];
+			if ('stopped' in body) bits.push(body.stopped ? 'container stopped' : 'nothing to stop');
+			if ('window_closed' in body) bits.push(body.window_closed ? 'window closed' : 'window left open');
+			if (body.uri) bits.push('opened in VS Code');
+			note = { ...note, [name]: { ok: true, text: bits.join(' · ') || body.detail || 'done' } };
+			await load();
+		} catch (e) {
+			note = { ...note, [name]: { ok: false, text: `Could not reach devdash: ${e}` } };
+		} finally {
+			busy = { ...busy, [name]: null };
+		}
+	}
 
 	function bytes(n) {
 		if (n === null || n === undefined) return '—';
@@ -152,6 +200,41 @@
 							<span class="badge muted-badge">no human build</span>
 						{/if}
 					</div>
+
+					<div class="actions">
+						{#if p.state === 'absent'}
+							<button
+								class="wide"
+								disabled={!!busy[p.name]}
+								onclick={() => act(p.name, 'open')}
+							>
+								{busy[p.name] === 'open' ? 'Opening…' : 'Open'}
+							</button>
+						{:else}
+							<button
+								disabled={!!busy[p.name]}
+								title={p.live_session ? `live: ${p.live_evidence}` : 'stop the container'}
+								onclick={() => act(p.name, 'close')}
+							>
+								{busy[p.name] === 'close' ? 'Closing…' : 'Close'}
+							</button>
+							<button
+								disabled={!!busy[p.name]}
+								title="reopen / rebuild and open a window"
+								onclick={() => act(p.name, 'open')}
+							>
+								{busy[p.name] === 'open' ? 'Opening…' : 'Open'}
+							</button>
+						{/if}
+						{#if offer[p.name]}
+							<button class="warn" disabled={!!busy[p.name]} onclick={() => act(p.name, 'close', { force: true })}>
+								Force stop
+							</button>
+						{/if}
+					</div>
+					{#if note[p.name]}
+						<p class="note" class:bad={!note[p.name].ok} role="status">{note[p.name].text}</p>
+					{/if}
 				</li>
 			{/each}
 		</ul>
@@ -323,5 +406,37 @@
 	}
 	.badge.muted-badge {
 		color: #8e8e93;
+	}
+	.actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+		margin-top: 0.6rem;
+	}
+	.actions button {
+		min-width: 4.5rem;
+		min-height: 2.75rem;
+		padding: 0 0.9rem;
+		font-size: 0.95rem;
+		border: 1px solid #d2d2d7;
+		background: #fff;
+		border-radius: 0.6rem;
+		color: inherit;
+	}
+	.actions button.wide {
+		flex: 1;
+	}
+	.actions button.warn {
+		border-color: #ffc9c4;
+		background: #fff1f0;
+		color: #a1221b;
+	}
+	.note {
+		margin: 0.5rem 0 0;
+		font-size: 0.8rem;
+		color: #6e6e73;
+	}
+	.note.bad {
+		color: #a1221b;
 	}
 </style>

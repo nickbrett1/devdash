@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/svelte";
+import { fireEvent, render, screen } from "@testing-library/svelte";
 import Page from "../src/routes/+page.svelte";
 
 // Fixtures use synthetic project names: devdash is public, and a test that
@@ -99,5 +99,84 @@ describe("when the token is missing", () => {
     stubFetch(PROJECTS, 401);
     render(Page);
     expect(await screen.findByText(/Not authorised/)).toBeInTheDocument();
+  });
+});
+
+// -- the mutating buttons ----------------------------------------------------
+
+function project(over = {}) {
+  return {
+    name: "acme",
+    path: "/w/acme",
+    state: "running",
+    live_session: false,
+    live_evidence: "",
+    window_open: false,
+    pipeline: "acme",
+    last_build: null,
+    last_human_build_days: null,
+    ...over,
+  };
+}
+
+/** Stub fetch with one project and a canned answer for the next POST. */
+function stubAction(row = project(), postBody = {}, postStatus = 200) {
+  const calls = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url, init) => {
+      if (init?.method === "POST") {
+        calls.push({ url: String(url), body: JSON.parse(init.body) });
+        return jsonResponse(postBody, postStatus);
+      }
+      return String(url).includes("/api/projects")
+        ? jsonResponse({ projects: [row], window_error: null, window_titles: 0 })
+        : jsonResponse(STATUS);
+    }),
+  );
+  return calls;
+}
+
+describe("open and close", () => {
+  it("offers Close and Open for a project that exists", async () => {
+    stubAction();
+    render(Page);
+    expect(await screen.findByRole("button", { name: "Close" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open" })).toBeInTheDocument();
+  });
+
+  it("offers only Open for a project with no container", async () => {
+    stubAction(project({ state: "absent", container: null }));
+    render(Page);
+    expect(await screen.findByRole("button", { name: "Open" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Close" })).not.toBeInTheDocument();
+  });
+
+  it("posts the close and reports both halves", async () => {
+    const calls = stubAction(project(), { name: "acme", stopped: true, window_closed: false });
+    render(Page);
+    await fireEvent.click(await screen.findByRole("button", { name: "Close" }));
+    expect(await screen.findByText("container stopped · window left open")).toBeInTheDocument();
+    expect(calls).toEqual([{ url: "/api/projects/acme/close", body: {} }]);
+  });
+
+  it("shows a refusal and offers the override rather than deciding for you", async () => {
+    const calls = stubAction(project({ live_session: true, live_evidence: "tmux: attached" }), {
+      name: "acme",
+      refused: true,
+      detail: "live session (tmux: attached); pass force to stop anyway",
+    });
+    render(Page);
+    await fireEvent.click(await screen.findByRole("button", { name: "Close" }));
+    expect(await screen.findByText(/live session \(tmux: attached\)/)).toBeInTheDocument();
+    await fireEvent.click(screen.getByRole("button", { name: "Force stop" }));
+    expect(calls.map((c) => c.body)).toEqual([{}, { force: true }]);
+  });
+
+  it("surfaces the server's reason when an action is refused outright", async () => {
+    stubAction(project(), { error: "unknown project 'acme'" }, 400);
+    render(Page);
+    await fireEvent.click(await screen.findByRole("button", { name: "Close" }));
+    expect(await screen.findByText("unknown project 'acme'")).toBeInTheDocument();
   });
 });
