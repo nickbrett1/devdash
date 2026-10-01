@@ -151,10 +151,10 @@ def test_open_reuses_devopen_with_the_safe_defaults(rows, monkeypatch):
 
 
 def test_open_registers_tailscale_when_there_is_a_key(rows, monkeypatch):
-    """Registering is most of the point of opening from a phone — the Blink link
-    devdash shows is only real once the container has a MagicDNS name. Without a
-    key, `tailscale up` wants a browser and the server cannot help, so it stays
-    silent rather than hanging."""
+    """Registering is most of the point of opening from a phone — ssh, a
+    terminal app or VS Code over the tailnet all need a MagicDNS name. Without
+    a key, `tailscale up` wants a browser and the server cannot help, so it
+    stays silent rather than hanging."""
     seen = {}
     monkeypatch.setattr(actions.opener, "open_repo",
                         lambda repo_url, **kw: seen.update(kw) or "uri")

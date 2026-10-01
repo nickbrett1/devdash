@@ -31,6 +31,9 @@ def live(monkeypatch):
     """A real server on an ephemeral port, with /api/* stubbed."""
     monkeypatch.setattr(projects, "rows", lambda: ([{"name": "acme"}], {"window_error": None, "window_titles": 1}))
     monkeypatch.setattr(projects, "status", lambda: {"vm_mem_total": 1})
+    # serve() warms the read caches in a thread; that is real docker, and this
+    # is not the test for it.
+    monkeypatch.setattr(projects, "warm", lambda: None)
     httpd = server.serve("127.0.0.1", 0, root=None)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
@@ -113,6 +116,44 @@ def test_close_posts_through_to_the_action(live, monkeypatch):
     assert status == 200
     assert seen == {"name": "acme", "force": False}
     assert json.loads(body)["stopped"] is True
+
+
+def test_a_close_drops_the_cached_samples(live, monkeypatch):
+    """The phone reloads the moment this returns, and the page is built from a
+    sample of the container list the close just changed."""
+    monkeypatch.setattr(actions, "close_project",
+                        lambda name, force=False: {"name": name, "stopped": True})
+    dropped = []
+    monkeypatch.setattr(projects, "invalidate", lambda: dropped.append(1))
+
+    post(live, "/api/projects/acme/close")
+
+    assert dropped == [1]
+
+
+def test_a_finished_job_drops_the_cached_samples(live, monkeypatch):
+    """A `devcontainer up` that has finished is exactly when the list the next
+    poll shows becomes wrong — including when it fails half a container up."""
+    monkeypatch.setattr(actions, "open_project", lambda name, **kw: {"name": name})
+    dropped = []
+    monkeypatch.setattr(projects, "invalidate", lambda: dropped.append(1))
+
+    wait_for_job(live, json.loads(post(live, "/api/projects/acme/open", None)[2])["job_id"])
+
+    assert dropped == [1]
+
+
+def test_serve_warms_the_reads_off_the_request_path(monkeypatch):
+    """`docker stats` is ~2s; a restart should not make the next poll pay for
+    the first sample while someone watches a spinner."""
+    warmed = threading.Event()
+    monkeypatch.setattr(projects, "warm", warmed.set)
+
+    httpd = server.serve("127.0.0.1", 0, root=None)
+    try:
+        assert warmed.wait(5), "serve() should have started the warmup"
+    finally:
+        httpd.server_close()
 
 
 def test_force_is_taken_from_the_body_and_the_query(live, monkeypatch):

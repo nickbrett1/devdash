@@ -170,8 +170,8 @@ def _should_register_tailscale():
     devopen treats `None` as "ask", which a server cannot do, and `False` as
     "never" — but never was wrong. Registering is not a side effect here, it is
     most of the point: the reason to open a project from a phone is to reach it
-    from the phone, and the Blink link devdash shows is only real once the
-    container has a MagicDNS name.
+    from the phone, which means ssh, a terminal app, or VS Code, all of which
+    need a MagicDNS name.
 
     `tailscale up` without an authkey prints a login URL that needs a browser,
     which is no use from a server — so this is True only when devopen's config

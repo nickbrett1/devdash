@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/svelte";
+import { fireEvent, render, screen } from "@testing-library/svelte";
 import Page from "../src/routes/+page.svelte";
 
 // Fixtures use synthetic project names: devdash is public, and a test that
@@ -272,19 +272,6 @@ describe("open and close", () => {
     await fireEvent.click(await screen.findByRole("button", { name: "Close" }));
     expect(await screen.findByText("container stopped · window left open")).toBeInTheDocument();
     expect(calls).toEqual([{ url: "/api/projects/acme/close", body: {} }]);
-  });
-
-  it("offers a Blink link only while the container is running", async () => {
-    stubAction(project({ blink: "blink://host/?host=acme&username=vscode&port=22" }));
-    render(Page);
-    const link = await screen.findByRole("link", { name: "Blink" });
-    expect(link).toHaveAttribute("href", "blink://host/?host=acme&username=vscode&port=22");
-
-    cleanup();
-    stubAction(project({ state: "stopped", blink: null }));
-    render(Page);
-    await screen.findByRole("button", { name: "Close" });
-    expect(screen.queryByRole("link", { name: "Blink" })).not.toBeInTheDocument();
   });
 
   it("shows a refusal and offers the override rather than deciding for you", async () => {

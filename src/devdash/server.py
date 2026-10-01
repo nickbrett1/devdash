@@ -16,6 +16,7 @@ URL was one more thing to paste into a phone for no real gain.
 """
 
 import json
+import threading
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -40,6 +41,23 @@ def _flag(key, body, query, default=False):
     if key in query:
         return str(query[key][0]).lower() in _TRUTHY
     return default
+
+
+def _run_job(fn, on_log, body, query):
+    """Run a job's action, then drop the cached samples.
+
+    A `devcontainer up` that has just finished is exactly the moment the list
+    the next poll shows becomes wrong, so the caches are cleared on the way out
+    — including on failure, where half a container may be up.
+    """
+    try:
+        return fn(
+            on_log=on_log,
+            fresh=_flag("fresh", body, query, default=None),
+            clean=_flag("clean", body, query, default=None),
+        )
+    finally:
+        projects.invalidate()
 
 
 def web_root(cfg):
@@ -124,6 +142,10 @@ class Handler(SimpleHTTPRequestHandler):
             # so it answers with the outcome rather than a job id.
             if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "close":
                 result = actions.close_project(parts[2], force=_flag("force", body, query))
+                # The container list and the stats sample are cached for the
+                # read endpoints; the phone reloads the moment this returns and
+                # must not be shown the state it just changed.
+                projects.invalidate()
                 self._send_json(result)
                 return
 
@@ -165,11 +187,8 @@ class Handler(SimpleHTTPRequestHandler):
                              "job_id": existing["job_id"], "state": existing["state"]},
                             status=409)
             return
-        snapshot = jobs.start(kind, target, lambda on_log: fn(
-            on_log=on_log,
-            fresh=_flag("fresh", body, query, default=None),
-            clean=_flag("clean", body, query, default=None),
-        ))
+        snapshot = jobs.start(kind, target, lambda on_log: _run_job(
+            fn, on_log, body, query))
         self._send_json(snapshot, status=202)
 
     def _json_body(self):
@@ -209,6 +228,11 @@ class Handler(SimpleHTTPRequestHandler):
 
 def serve(host, port, root):
     Handler.root = root
+    # Fill the memoised samples before the first phone asks for them: `docker
+    # stats` alone is ~2s, and paying that while someone watches a spinner is
+    # the wrong moment to pay it. Off the request path, so a slow docker only
+    # delays the page that arrives during the first seconds after a restart.
+    threading.Thread(target=projects.warm, daemon=True, name="warm").start()
     # SimpleHTTPRequestHandler serves relative to its `directory`, NOT the cwd
     # and not Handler.root — without this it happily lists the whole repository
     # (and, under launchd, whatever directory launchd started it in). The class

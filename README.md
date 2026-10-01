@@ -296,6 +296,35 @@ devopen's config carries an authkey, and leaves `fresh`/`clean` off unless the
 body asks for them: every one of devopen's prompts is a question a server
 cannot answer, so it is a parameter with a safe default instead.
 
+### Why the first load is the slow one
+
+The two read endpoints are joins over reads that are individually slow and
+collectively repeated — measured on this machine, warm:
+
+| Read | Cost | Why |
+| --- | --- | --- |
+| `docker ps -a` + 4 inspects per container | ~1.2s | ~40 CLI invocations |
+| `docker stats --no-stream` | ~1.9s | it samples; there is no cheaper way |
+| `active_session` per running container | ~0.25s | three `docker exec`s |
+| `osascript` × 2 (System Events) | ~0.4s | one call per poll |
+
+None of them is *wrong*, and none of them changes much between two polls thirty
+seconds apart. So they are sampled, not awaited: `projects._Memo` serves the
+last value immediately and refreshes behind it, which makes a poll a join over
+cached samples. Two consequences worth knowing:
+
+- a value can be one TTL stale (`_containers` 3s, the docker stats 15s), and a
+  failed refresh keeps the last good value rather than blanking the page;
+- anything that changes the world — a `close`, or a `devcontainer up` that has
+  finished — calls `projects.invalidate()`, so the reload that follows an action
+  never shows the state the action just changed.
+
+The independent waits that *are* paid are paid in parallel: the System Events
+calls and the per-container session probes run at once, so `rows()` costs the
+slowest read rather than the sum. `serve()` warms the memos at startup, off the
+request path, so a restart does not make the next poll pay for the first
+sample.
+
 ## On a phone
 
 The page is installable (a manifest, a `standalone` display mode and an
@@ -303,18 +332,15 @@ apple-touch icon in `web/static`), pulls to refresh, and keeps every control at
 the 44 px minimum. The manifest is fetched same-origin, so `start_url: "/"`
 keeps the installed app pointed at the same tailnet URL you opened.
 
-Each running project carries a **Blink** link, built as
-`blink://host/?host=<project>&username=<remoteUser>&port=22`. devopen registers
-the container on Tailscale under the workspace name, so the link and the
-project agree by construction; `remoteUser` is read from the repo's
-devcontainer config, defaulting to `vscode` as devopen does. It is only offered
-while the container is running, because that is the only time the name
-resolves.
+There was a **Blink** link on each running project. It never worked, so it is
+gone: what the phone needs is the container's MagicDNS name, and that is
+devopen's to register, not a URL for devdash to guess at.
 
-That link is also why `open` now registers Tailscale when devopen's config has
-an authkey: reaching a project from the phone is most of the point of opening
-it from the phone, and `tailscale up` without a key wants a browser a server
-cannot provide. No key means silence, not a hang.
+That is why `open` registers Tailscale when devopen's config carries an
+authkey: reaching a project from the phone is most of the point of opening it
+from the phone — ssh, a terminal app or VS Code all need a name to aim at — and
+`tailscale up` without a key wants a browser a server cannot provide. No key
+means silence, not a hang.
 
 There are no CLI shims here. `devdash` is a server, installed as a LaunchAgent
 (`install.py`), so there is nothing for a `pip install` to shadow.

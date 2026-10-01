@@ -8,6 +8,8 @@ publish it. Only shapes and arithmetic matter here.
 import datetime as dt
 import os
 import subprocess
+import threading
+import time
 
 import pytest
 
@@ -17,10 +19,12 @@ UTC = dt.UTC
 
 
 @pytest.fixture(autouse=True)
-def empty_build_cache():
-    projects._build_cache.clear()
+def clean_caches():
+    # The memos and the build cache outlive a request on purpose, so every case
+    # starts from an empty one.
+    projects.reset()
     yield
-    projects._build_cache.clear()
+    projects.reset()
 
 
 def _completed(stdout="", returncode=0, stderr=""):
@@ -113,8 +117,6 @@ def test_rows_joins_workspaces_containers_windows_and_builds(tmp_path, monkeypat
     a = rows[0]
     assert a["state"] == "absent"
     assert a["container"] is None
-    # No container, so nothing to reach: a Blink link would be a lie.
-    assert a["blink"] is None
     assert a["live_session"] is False
     assert a["window_open"] is True
     assert a["pipeline"] == "acme"
@@ -124,9 +126,6 @@ def test_rows_joins_workspaces_containers_windows_and_builds(tmp_path, monkeypat
     e = rows[1]
     assert e["state"] == "running"
     assert e["container"] == "example-one-dev"
-    # devopen registers the container under the workspace name, so the phone
-    # link and the project agree by construction; remoteUser defaults to vscode.
-    assert e["blink"] == "blink://host/?host=example-one&username=vscode&port=22"
     assert e["live_session"] is True
     assert e["live_evidence"] == "tmux: attached"
     assert e["window_open"] is False
@@ -202,6 +201,30 @@ def test_last_build_survives_a_buildkite_error(tmp_path, monkeypatch):
     assert rows[0]["last_build"] is None
 
 
+def test_build_lookups_happen_in_parallel(tmp_path, monkeypatch):
+    """One HTTPS call per project, so a cold first poll used to wait for ten of
+    them one after another — most of the several seconds it took."""
+    for name in ("acme", "example-one", "third"):
+        (tmp_path / name).mkdir()
+    monkeypatch.setattr(projects.reap_config, "load", _fake_reap_config(tmp_path))
+    monkeypatch.setattr(projects.containers, "list_devcontainers", list)
+    monkeypatch.setattr(projects.vscode, "windows_for", lambda ws, process=None: (set(), None))
+    monkeypatch.setattr(projects.vscode, "list_window_titles", lambda process=None: ([], None))
+
+    def slow_build(org, slug, token, **kw):
+        time.sleep(0.2)
+        return {"created_at": "2026-09-08T00:00:00Z", "number": 1, "branch": "main", "author": "a"}
+
+    monkeypatch.setattr(projects.buildkite, "last_human_build", slow_build)
+
+    started = time.monotonic()
+    rows, _ = projects.rows()
+    elapsed = time.monotonic() - started
+
+    assert len(rows) == 3
+    assert elapsed < 0.5, f"three 0.2s lookups took {elapsed:.2f}s — they are not in parallel"
+
+
 def test_last_build_is_cached(tmp_path, monkeypatch):
     (tmp_path / "acme").mkdir()
     monkeypatch.setattr(projects.reap_config, "load", _fake_reap_config(tmp_path))
@@ -264,3 +287,126 @@ def test_workspace_dirs_ignores_dotfiles_and_files(tmp_path):
     (tmp_path / "notes.txt").write_text("x")
     assert projects._workspace_dirs(tmp_path) == ["acme"]
     assert projects._workspace_dirs(os.path.join(tmp_path, "nope")) == []
+
+
+# -- the memo ---------------------------------------------------------------
+#
+# These reads are the reason a poll is slow: `docker stats` is ~2s and the
+# container list is >1s, and neither moves much in thirty seconds. The memo is
+# what turns a poll into a join over the last sample, so its behaviour is worth
+# pinning down.
+
+
+def _counting(fn):
+    calls = []
+
+    def wrapped(*a, **kw):
+        calls.append(a)
+        return fn(*a, **kw)
+
+    wrapped.calls = calls
+    return wrapped
+
+
+def test_the_container_list_is_read_once_for_two_polls(tmp_path, monkeypatch):
+    (tmp_path / "acme").mkdir()
+    monkeypatch.setattr(projects.reap_config, "load", _fake_reap_config(tmp_path))
+    listing = _counting(list)
+    monkeypatch.setattr(projects.containers, "list_devcontainers", listing)
+    monkeypatch.setattr(projects.vscode, "windows_for", lambda ws, process=None: (set(), None))
+    monkeypatch.setattr(projects.vscode, "list_window_titles", lambda process=None: ([], None))
+
+    projects.rows(probe_builds=False)
+    projects.rows(probe_builds=False)
+
+    assert len(listing.calls) == 1
+
+
+def test_invalidate_makes_the_next_read_fresh(tmp_path, monkeypatch):
+    """The phone reloads the instant a container stops, and must not be shown
+    the row it just changed."""
+    (tmp_path / "acme").mkdir()
+    monkeypatch.setattr(projects.reap_config, "load", _fake_reap_config(tmp_path))
+    listing = _counting(list)
+    monkeypatch.setattr(projects.containers, "list_devcontainers", listing)
+    monkeypatch.setattr(projects.vscode, "windows_for", lambda ws, process=None: (set(), None))
+    monkeypatch.setattr(projects.vscode, "list_window_titles", lambda process=None: ([], None))
+
+    projects.rows(probe_builds=False)
+    projects.invalidate()
+    projects.rows(probe_builds=False)
+
+    assert len(listing.calls) == 2
+
+
+def test_a_cold_failure_is_raised_rather_than_swallowed():
+    """No value yet and a broken read is a broken page, not a blank one."""
+    def boom():
+        raise OSError("docker is not reachable")
+
+    memo = projects._Memo(3.0, boom)
+    with pytest.raises(OSError, match="not reachable"):
+        memo.get()
+
+
+def test_a_failed_refresh_keeps_the_last_good_value():
+    """A blip on the second read must not blank a page that has data."""
+    calls = []
+
+    def flaky():
+        calls.append(1)
+        if len(calls) == 1:
+            return "first"
+        raise OSError("docker went away")
+
+    memo = projects._Memo(0.0, flaky)  # 0 TTL: every read refreshes
+    assert memo.get() == "first"
+
+    for _ in range(500):  # let the failing refresh land
+        memo.get()  # past its TTL, so this asks for a refresh
+        if len(calls) >= 2 and not memo._refreshing:
+            break
+        time.sleep(0.01)
+
+    assert len(calls) >= 2, "the refresh should have been attempted"
+    assert memo.get() == "first"
+
+
+def test_a_stale_value_is_served_while_it_refreshes():
+    """The point of the memo: an answer does not wait for the read."""
+    gate = threading.Event()
+
+    def slow():
+        gate.wait(5)
+        return "fresh"
+
+    memo = projects._Memo(0.0, slow)  # 0 TTL, so the value is stale at once
+    memo._value, memo._at = "stale", time.monotonic()
+
+    started = time.monotonic()
+    assert memo.get() == "stale"
+    assert time.monotonic() - started < 0.5, "the caller should not wait for the refresh"
+    gate.set()
+
+
+def test_live_sessions_are_probed_for_every_running_container(tmp_path, monkeypatch):
+    """In parallel, and once each: the probe is three `docker exec`s, so a
+    project list of ten used to pay for thirty."""
+    ids = []
+
+    def probing(cid):
+        ids.append(cid)
+        return (True, f"{cid}: tmux")
+
+    monkeypatch.setattr(projects.containers, "active_session", probing)
+
+    lives = projects._live_sessions([{"id": f"c{i}", "running": True} for i in range(5)])
+
+    assert sorted(ids) == [f"c{i}" for i in range(5)]
+    assert lives["c3"] == (True, "c3: tmux")
+
+
+def test_live_sessions_costs_nothing_with_no_containers(monkeypatch):
+    monkeypatch.setattr(projects.containers, "active_session",
+                        lambda cid: pytest.fail("nothing is running"))
+    assert projects._live_sessions([]) == {}

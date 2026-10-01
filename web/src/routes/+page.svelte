@@ -2,11 +2,13 @@
 	import { onMount } from 'svelte';
 
 	// The page is prerendered to a static asset and served by devdash's own
-	// Python server, so every number here comes from /api/* at runtime and
-	// the cookie the server set on the first ?token= visit authenticates it.
+	// Python server, so every number here comes from /api/* at runtime.
 	const REFRESH_MS = 30_000;
 	const JOB_POLL_MS = 1000;
-	const AUTH = 'Not authorised. Open this page once with ?token=… and the browser will keep a cookie.';
+	// devdash answers 401 for nothing: access is the tailnet bind, so this is
+	// only reachable if something new starts gating the API. Kept as a
+	// readable message rather than an unexplained blank page.
+	const AUTH = 'Not authorised. devdash gates access by the tailnet bind, not by a token.';
 
 	let projects = $state([]);
 	let status = $state(null);
@@ -359,12 +361,6 @@
 							</button>
 						{/if}
 					</div>
-					{#if p.blink}
-						<!-- Blink Shell deep link: adds this container as a host. Only
-						     present while the container runs, because that is the only
-						     time the MagicDNS name resolves. -->
-						<a class="blink" href={p.blink}>Blink</a>
-					{/if}
 					{#if note[p.name]}
 						<p class="note" class:bad={!note[p.name].ok} role="status">{note[p.name].text}</p>
 					{/if}
@@ -475,7 +471,7 @@
 		opacity: 0.5;
 	}
 	.error {
-		background: #1619231f0;
+		background: #3a1518;
 		border: 1px solid #7f2d2d;
 		color: #fca5a5;
 		padding: 0.75rem;
@@ -617,7 +613,7 @@
 	}
 	.actions button.warn {
 		border-color: #7f2d2d;
-		background: #1619231f0;
+		background: #3a1518;
 		color: #fca5a5;
 	}
 	.note {
@@ -634,19 +630,6 @@
 		font-size: 0.8rem;
 		color: #94a3b8;
 	}
-	.blink {
-		display: inline-flex;
-		align-items: center;
-		min-height: 2.75rem;
-		padding: 0 0.9rem;
-		margin-top: 0.4rem;
-		border: 1px solid #3b4152;
-		border-radius: 0.6rem;
-		background: #161923;
-		color: inherit;
-		text-decoration: none;
-		font-size: 0.9rem;
-	}
 	.job {
 		margin-top: 1rem;
 		background: #161923;
@@ -656,7 +639,7 @@
 	}
 	.job.bad {
 		border-color: #7f2d2d;
-		background: #1619231f0;
+		background: #3a1518;
 	}
 	.job-head {
 		display: flex;
