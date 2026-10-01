@@ -434,8 +434,8 @@
 	:global(body) {
 		margin: 0;
 		font: 16px/1.4 -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-		background: #f5f5f7;
-		color: #1d1d1f;
+		background: #0f172a;
+		color: #e2e8f0;
 	}
 	main {
 		max-width: 42rem;
@@ -460,33 +460,33 @@
 	}
 	.stamp {
 		font-size: 0.8rem;
-		color: #6e6e73;
+		color: #94a3b8;
 		font-variant-numeric: tabular-nums;
 	}
 	button {
 		min-width: 2.75rem;
 		min-height: 2.75rem;
 		font-size: 1.2rem;
-		border: 1px solid #d2d2d7;
-		background: #fff;
+		border: 1px solid #3b4152;
+		background: #161923;
 		border-radius: 0.6rem;
 	}
 	button:disabled {
 		opacity: 0.5;
 	}
 	.error {
-		background: #fff1f0;
-		border: 1px solid #ffc9c4;
-		color: #a1221b;
+		background: #1619231f0;
+		border: 1px solid #7f2d2d;
+		color: #fca5a5;
 		padding: 0.75rem;
 		border-radius: 0.6rem;
 	}
 	.muted {
-		color: #6e6e73;
+		color: #94a3b8;
 	}
 	.strip {
-		background: #fff;
-		border: 1px solid #e5e5ea;
+		background: #161923;
+		border: 1px solid #3b4152;
 		border-radius: 0.75rem;
 		padding: 0.9rem 1rem;
 		margin-bottom: 1rem;
@@ -495,19 +495,19 @@
 		display: flex;
 		justify-content: space-between;
 		font-size: 0.85rem;
-		color: #6e6e73;
+		color: #94a3b8;
 		margin-bottom: 0.35rem;
 	}
 	.bar {
 		height: 0.5rem;
-		background: #e5e5ea;
+		background: #3b4152;
 		border-radius: 0.25rem;
 		overflow: hidden;
 	}
 	.bar span {
 		display: block;
 		height: 100%;
-		background: #34c759;
+		background: #34d399;
 	}
 	.figures {
 		display: grid;
@@ -526,7 +526,7 @@
 	}
 	.figure .k {
 		font-size: 0.72rem;
-		color: #6e6e73;
+		color: #94a3b8;
 	}
 	.projects {
 		list-style: none;
@@ -537,8 +537,8 @@
 		gap: 0.5rem;
 	}
 	.project {
-		background: #fff;
-		border: 1px solid #e5e5ea;
+		background: #161923;
+		border: 1px solid #3b4152;
 		border-radius: 0.75rem;
 		padding: 0.75rem 0.9rem;
 		/* M2 turns each of these into a tap target; reserve the height now. */
@@ -557,16 +557,16 @@
 		font-size: 0.75rem;
 		padding: 0.1rem 0.5rem;
 		border-radius: 999px;
-		background: #e5e5ea;
-		color: #48484a;
+		background: #3b4152;
+		color: #cbd5e1;
 	}
 	.state.running {
-		background: #d7f5dd;
-		color: #1b7a35;
+		background: #17321f;
+		color: #5ee08a;
 	}
 	.state.stopped {
-		background: #fdeccd;
-		color: #8a5a00;
+		background: #3a2f10;
+		color: #f0c14b;
 	}
 	.badges {
 		display: flex;
@@ -578,23 +578,23 @@
 		font-size: 0.72rem;
 		padding: 0.12rem 0.45rem;
 		border-radius: 0.35rem;
-		background: #f0f0f3;
-		color: #48484a;
+		background: #1f2534;
+		color: #cbd5e1;
 		max-width: 100%;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
 	.badge.live {
-		background: #d7f5dd;
-		color: #1b7a35;
+		background: #17321f;
+		color: #5ee08a;
 	}
 	.badge.window {
-		background: #dce8ff;
-		color: #1b4fa8;
+		background: #17293d;
+		color: #60a5fa;
 	}
 	.badge.muted-badge {
-		color: #8e8e93;
+		color: #6b7280;
 	}
 	.actions {
 		display: flex;
@@ -607,8 +607,8 @@
 		min-height: 2.75rem;
 		padding: 0 0.9rem;
 		font-size: 0.95rem;
-		border: 1px solid #d2d2d7;
-		background: #fff;
+		border: 1px solid #3b4152;
+		background: #161923;
 		border-radius: 0.6rem;
 		color: inherit;
 	}
@@ -616,23 +616,23 @@
 		flex: 1;
 	}
 	.actions button.warn {
-		border-color: #ffc9c4;
-		background: #fff1f0;
-		color: #a1221b;
+		border-color: #7f2d2d;
+		background: #1619231f0;
+		color: #fca5a5;
 	}
 	.note {
 		margin: 0.5rem 0 0;
 		font-size: 0.8rem;
-		color: #6e6e73;
+		color: #94a3b8;
 	}
 	.note.bad {
-		color: #a1221b;
+		color: #fca5a5;
 	}
 	.pull {
 		margin: 0 0 0.5rem;
 		text-align: center;
 		font-size: 0.8rem;
-		color: #6e6e73;
+		color: #94a3b8;
 	}
 	.blink {
 		display: inline-flex;
@@ -640,23 +640,23 @@
 		min-height: 2.75rem;
 		padding: 0 0.9rem;
 		margin-top: 0.4rem;
-		border: 1px solid #d2d2d7;
+		border: 1px solid #3b4152;
 		border-radius: 0.6rem;
-		background: #fff;
+		background: #161923;
 		color: inherit;
 		text-decoration: none;
 		font-size: 0.9rem;
 	}
 	.job {
 		margin-top: 1rem;
-		background: #fff;
-		border: 1px solid #e5e5ea;
+		background: #161923;
+		border: 1px solid #3b4152;
 		border-radius: 0.75rem;
 		padding: 0.9rem 1rem;
 	}
 	.job.bad {
-		border-color: #ffc9c4;
-		background: #fff1f0;
+		border-color: #7f2d2d;
+		background: #1619231f0;
 	}
 	.job-head {
 		display: flex;
@@ -669,8 +669,8 @@
 		padding: 0.6rem;
 		max-height: 18rem;
 		overflow: auto;
-		background: #1d1d1f;
-		color: #f2f2f7;
+		background: #0b0e17;
+		color: #e2e8f0;
 		border-radius: 0.5rem;
 		font-size: 0.75rem;
 		line-height: 1.35;
@@ -693,9 +693,9 @@
 		padding: 0.6rem 0.7rem;
 		min-height: 2.75rem;
 		font-size: 1rem;
-		border: 1px solid #d2d2d7;
+		border: 1px solid #3b4152;
 		border-radius: 0.6rem;
-		background: #fff;
+		background: #161923;
 		color: inherit;
 	}
 	.repos {
@@ -711,8 +711,8 @@
 		align-items: center;
 		justify-content: space-between;
 		gap: 0.6rem;
-		background: #fff;
-		border: 1px solid #e5e5ea;
+		background: #161923;
+		border: 1px solid #3b4152;
 		border-radius: 0.6rem;
 		padding: 0.5rem 0.6rem;
 	}

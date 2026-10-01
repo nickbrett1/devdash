@@ -31,7 +31,7 @@ def live(monkeypatch):
     """A real server on an ephemeral port, with /api/* stubbed."""
     monkeypatch.setattr(projects, "rows", lambda: ([{"name": "acme"}], {"window_error": None, "window_titles": 1}))
     monkeypatch.setattr(projects, "status", lambda: {"vm_mem_total": 1})
-    httpd = server.serve("127.0.0.1", 0, TOKEN, root=None)
+    httpd = server.serve("127.0.0.1", 0, root=None)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     try:
@@ -39,7 +39,6 @@ def live(monkeypatch):
     finally:
         httpd.shutdown()
         httpd.server_close()
-        server.Handler.token = ""
         server.Handler.root = None
 
 
@@ -89,67 +88,11 @@ def test_healthz_is_open_and_reveals_nothing(live):
     assert "token" not in body.decode()
 
 
-def test_api_without_a_token_is_401(live):
-    status, headers, body = get(live, "/api/projects")
-    assert status == 401
-    assert headers["WWW-Authenticate"].startswith("Bearer")
-    assert json.loads(body) == {"error": "unauthorised"}
 
 
-def test_api_with_a_bearer_token(live):
-    status, _, body = get(live, "/api/projects", {"Authorization": f"Bearer {TOKEN}"})
-    assert status == 200
-    assert json.loads(body)["projects"] == [{"name": "acme"}]
 
 
-def test_a_bearer_token_is_compared_whole(live):
-    status, _, _ = get(live, "/api/projects", {"Authorization": f"Bearer {TOKEN}x"})
-    assert status == 401
-    status, _, _ = get(live, "/api/projects", {"Authorization": f"Bearer {TOKEN[:3]}"})
-    assert status == 401
 
-
-def test_first_visit_trades_the_token_for_a_cookie_and_drops_it(live):
-    status, headers, _ = get(live, f"/?token={TOKEN}")
-    assert status == 303
-    # The secret must not survive in the redirect target: that URL is what the
-    # phone's browser history and any screenshot will keep.
-    assert headers["Location"] == "/"
-    assert TOKEN not in headers["Location"]
-    cookie = headers["Set-Cookie"]
-    assert cookie.startswith(f"{server.COOKIE}={TOKEN}")
-    assert "HttpOnly" in cookie
-    assert "SameSite=Lax" in cookie
-
-
-def test_the_cookie_then_authenticates(live):
-    _, headers, _ = get(live, f"/api/status?token={TOKEN}")
-    cookie = headers["Set-Cookie"].split(";")[0]
-    status, _, body = get(live, "/api/status", {"Cookie": cookie})
-    assert status == 200
-    assert json.loads(body) == {"vm_mem_total": 1}
-
-
-def test_a_wrong_query_token_is_401_and_sets_nothing(live):
-    status, headers, _ = get(live, "/api/projects?token=nope")
-    assert status == 401
-    assert "Set-Cookie" not in headers
-
-
-def test_no_token_configured_means_open(monkeypatch):
-    """An empty token is an explicit opt-out (used by tests and local dev)."""
-    monkeypatch.setattr(projects, "rows", lambda: ([], {"window_error": None, "window_titles": 0}))
-    httpd = server.serve("127.0.0.1", 0, "", root=None)
-    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
-    thread.start()
-    try:
-        status, _, _ = get(httpd.server_address[1], "/api/projects")
-        assert status == 200
-    finally:
-        httpd.shutdown()
-        httpd.server_close()
-        server.Handler.token = ""
-        server.Handler.root = None
 
 
 # -- the mutating routes ----------------------------------------------------
@@ -159,11 +102,6 @@ def test_no_token_configured_means_open(monkeypatch):
 # without the caller spelling out an override.
 
 
-def test_post_without_a_token_is_401(live):
-    status, _, body = post(live, "/api/projects/acme/close")
-    assert status == 401
-    assert json.loads(body) == {"error": "unauthorised"}
-
 
 def test_close_posts_through_to_the_action(live, monkeypatch):
     seen = {}
@@ -171,7 +109,7 @@ def test_close_posts_through_to_the_action(live, monkeypatch):
                         lambda name, force=False: seen.update(name=name, force=force)
                         or {"name": name, "stopped": True, "window_closed": True})
     status, _, body = post(live, "/api/projects/acme/close",
-                           headers={"Authorization": f"Bearer {TOKEN}"})
+                           )
     assert status == 200
     assert seen == {"name": "acme", "force": False}
     assert json.loads(body)["stopped"] is True
@@ -181,9 +119,8 @@ def test_force_is_taken_from_the_body_and_the_query(live, monkeypatch):
     seen = []
     monkeypatch.setattr(actions, "close_project",
                         lambda name, force=False: seen.append(force) or {"name": name})
-    auth = {"Authorization": f"Bearer {TOKEN}"}
-    post(live, "/api/projects/acme/close", {"force": True}, auth)
-    post(live, "/api/projects/acme/close?force=1", None, auth)
+    post(live, "/api/projects/acme/close", {"force": True})
+    post(live, "/api/projects/acme/close?force=1", None)
     assert seen == [True, True]
 
 
@@ -195,7 +132,7 @@ def test_a_refusal_is_a_200_the_ui_can_render(live, monkeypatch):
                         lambda name, force=False: {"name": name, "refused": True,
                                                    "detail": "live session (tmux: attached)"})
     status, _, body = post(live, "/api/projects/acme/close",
-                           headers={"Authorization": f"Bearer {TOKEN}"})
+                           )
     assert status == 200
     payload = json.loads(body)
     assert payload["refused"] is True and "tmux" in payload["detail"]
@@ -206,23 +143,22 @@ def test_open_starts_a_job_instead_of_blocking(live, monkeypatch):
     wait that long, so open answers 202 with an id to poll."""
     monkeypatch.setattr(actions, "open_project",
                         lambda name, **kw: {"name": name, "uri": "vscode-remote://x"})
-    auth = {"Authorization": f"Bearer {TOKEN}"}
-    status, _, body = post(live, "/api/projects/acme/open", None, auth)
+    status, _, body = post(live, "/api/projects/acme/open", None)
     assert status == 202
     snapshot = json.loads(body)
     assert snapshot["job_id"] and snapshot["target"] == "acme"
 
-    done = wait_for_job(live, snapshot["job_id"], auth)
+    done = wait_for_job(live, snapshot["job_id"])
     assert done["state"] == "done"
     assert done["result"]["uri"] == "vscode-remote://x"
 
 
-def wait_for_job(port, job_id, headers, timeout=5.0):
+def wait_for_job(port, job_id, timeout=5.0):
     """Poll a job to completion. The job runs on a thread, so the first poll can
     legitimately still say 'running'."""
     deadline = time.time() + timeout
     while True:
-        status, _, body = get(port, f"/api/jobs/{job_id}", headers)
+        status, _, body = get(port, f"/api/jobs/{job_id}")
         assert status == 200
         snapshot = json.loads(body)
         if snapshot["state"] != "running" or time.time() > deadline:
@@ -235,9 +171,8 @@ def test_open_passes_fresh_and_clean_only_when_asked(live, monkeypatch):
     monkeypatch.setattr(actions, "open_project",
                         lambda name, fresh=None, clean=None, on_log=None:
                         seen.append((fresh, clean)) or {"name": name, "uri": "uri"})
-    auth = {"Authorization": f"Bearer {TOKEN}"}
-    wait_for_job(live, json.loads(post(live, "/api/projects/acme/open", None, auth)[2])["job_id"], auth)
-    wait_for_job(live, json.loads(post(live, "/api/projects/acme/open", {"fresh": True}, auth)[2])["job_id"], auth)
+    wait_for_job(live, json.loads(post(live, "/api/projects/acme/open", None)[2])["job_id"])
+    wait_for_job(live, json.loads(post(live, "/api/projects/acme/open", {"fresh": True})[2])["job_id"])
     assert seen == [(None, None), (True, None)]
 
 
@@ -247,9 +182,8 @@ def test_a_second_open_for_the_same_target_is_409(live, monkeypatch):
     release = threading.Event()
     monkeypatch.setattr(actions, "open_project",
                         lambda name, **kw: (release.wait(5), {"name": name})[1])
-    auth = {"Authorization": f"Bearer {TOKEN}"}
-    first = json.loads(post(live, "/api/projects/acme/open", None, auth)[2])
-    status, _, body = post(live, "/api/projects/acme/open", None, auth)
+    first = json.loads(post(live, "/api/projects/acme/open", None)[2])
+    status, _, body = post(live, "/api/projects/acme/open", None)
     assert status == 409
     assert json.loads(body)["job_id"] == first["job_id"]
     release.set()
@@ -262,9 +196,8 @@ def test_the_job_log_streams_to_the_poller(live, monkeypatch):
         return {"name": name}
 
     monkeypatch.setattr(actions, "open_project", open_it)
-    auth = {"Authorization": f"Bearer {TOKEN}"}
-    job_id = json.loads(post(live, "/api/projects/acme/open", None, auth)[2])["job_id"]
-    assert wait_for_job(live, job_id, auth)["log"] == ["Cloning acme", "Container ready"]
+    job_id = json.loads(post(live, "/api/projects/acme/open", None)[2])["job_id"]
+    assert wait_for_job(live, job_id)["log"] == ["Cloning acme", "Container ready"]
 
 
 def test_a_job_that_raises_fails_instead_of_hanging(live, monkeypatch):
@@ -272,9 +205,8 @@ def test_a_job_that_raises_fails_instead_of_hanging(live, monkeypatch):
         raise actions.ActionError("command failed: git clone")
 
     monkeypatch.setattr(actions, "open_project", boom)
-    auth = {"Authorization": f"Bearer {TOKEN}"}
-    job_id = json.loads(post(live, "/api/projects/acme/open", None, auth)[2])["job_id"]
-    done = wait_for_job(live, job_id, auth)
+    job_id = json.loads(post(live, "/api/projects/acme/open", None)[2])["job_id"]
+    done = wait_for_job(live, job_id)
     assert done["state"] == "failed"
     assert "git clone" in done["error"]
 
@@ -294,10 +226,9 @@ def test_provision_starts_a_job_for_the_repo(live, monkeypatch):
     seen = {}
     monkeypatch.setattr(actions, "provision",
                         lambda repo, on_log=None, **kw: seen.update(repo=repo) or {"name": "acme"})
-    auth = {"Authorization": f"Bearer {TOKEN}"}
-    status, _, body = post(live, "/api/provision", {"repo": "nickbrett1/acme"}, auth)
+    status, _, body = post(live, "/api/provision", {"repo": "nickbrett1/acme"})
     assert status == 202
-    done = wait_for_job(live, json.loads(body)["job_id"], auth)
+    done = wait_for_job(live, json.loads(body)["job_id"])
     assert done["target"] == "nickbrett1/acme"
     assert seen == {"repo": "nickbrett1/acme"}
 
@@ -321,7 +252,7 @@ def test_an_action_error_is_a_400(live, monkeypatch):
 
     monkeypatch.setattr(actions, "close_project", boom)
     status, _, body = post(live, "/api/projects/nope/close",
-                           headers={"Authorization": f"Bearer {TOKEN}"})
+                           )
     assert status == 400
     assert "unknown project" in json.loads(body)["error"]
 
@@ -332,16 +263,15 @@ def test_an_unexpected_action_failure_is_a_500(live, monkeypatch):
 
     monkeypatch.setattr(actions, "close_project", boom)
     status, _, body = post(live, "/api/projects/acme/close",
-                           headers={"Authorization": f"Bearer {TOKEN}"})
+                           )
     assert status == 500
     assert "docker died" in json.loads(body)["error"]
 
 
 def test_unknown_routes_are_404(live):
-    auth = {"Authorization": f"Bearer {TOKEN}"}
-    assert post(live, "/api/projects/acme", None, auth)[0] == 404
-    assert post(live, "/api/projects/acme/destroy", None, auth)[0] == 404
-    assert post(live, "/api/projects", None, auth)[0] == 404
+    assert post(live, "/api/projects/acme", None)[0] == 404
+    assert post(live, "/api/projects/acme/destroy", None)[0] == 404
+    assert post(live, "/api/projects", None)[0] == 404
 
 
 def test_a_broken_join_is_a_500_not_a_dead_server(live, monkeypatch):
@@ -354,9 +284,14 @@ def test_a_broken_join_is_a_500_not_a_dead_server(live, monkeypatch):
     assert "docker is not reachable" in json.loads(body)["error"]
 
 
-def test_the_frontend_is_behind_the_token_too(live):
-    """Not just /api/*: an unauthenticated visitor gets nothing at all."""
-    assert get(live, "/")[0] == 401
+def test_everything_is_open_because_the_tailnet_is_the_gate(live):
+    """There is no token: the bind address is the access control. The one thing
+    worth asserting is that nothing *creates* a credential any more — a server
+    that still set a cookie would imply a gate that is not there."""
+    for path in ("/", "/api/projects", "/api/status", "/healthz", "/nothing-here"):
+        _status, headers, _body = get(live, path)
+        assert "Set-Cookie" not in headers, path
+    assert get(live, "/api/projects")[0] == 200
 
 
 def test_unbuilt_frontend_says_so_instead_of_404ing(live):
@@ -376,7 +311,7 @@ def test_static_files_come_from_web_dir_not_the_cwd(tmp_path, monkeypatch):
     (dist / "index.html").write_text("<h1>devdash</h1>")
     (tmp_path / "secret.txt").write_text("do not serve me")
 
-    httpd = server.serve("127.0.0.1", 0, TOKEN, root=dist)
+    httpd = server.serve("127.0.0.1", 0, root=dist)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     try:
@@ -389,5 +324,4 @@ def test_static_files_come_from_web_dir_not_the_cwd(tmp_path, monkeypatch):
     finally:
         httpd.shutdown()
         httpd.server_close()
-        server.Handler.token = ""
         server.Handler.root = None

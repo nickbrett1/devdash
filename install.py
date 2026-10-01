@@ -169,11 +169,10 @@ def main():
     # an already-satisfied name satisfied and keeps the old commit).
     sh([vpython, "-m", "pip", "install", "--quiet", "-e", install_dir])
 
-    print("\n[4/7] Writing config and token…")
+    print("\n[4/7] Writing config…")
     os.makedirs(config_dir, exist_ok=True)
-    # Let devdash generate the config, so the token in the URL below is exactly
-    # the one the server will check.
-    token = out([vpython, "-c", "from devdash import config; print(config.load()['token'])"])
+    # Let devdash write the config, so the host/port printed below are exactly
+    # the ones the server will bind.
     host = out([vpython, "-c", "from devdash import config; print(config.bind_host(config.load()))"])
     port = out([vpython, "-c", "from devdash import config; print(config.load()['port'])"])
     print(f"  {os.path.join(config_dir, 'config.json')} (mode 600)")
@@ -204,12 +203,12 @@ def main():
     print("  devdash installed 📊")
     print("=" * 62)
     print()
-    print(f"  http://{host}:{port}/?token={token}")
+    print(f"  http://{host}:{port}/")
     print()
-    print("Open that once (from the phone too) — it trades the token for an")
-    print("HttpOnly cookie and drops it from the URL. Bookmark the clean URL after.")
-    print(f"\n  token:  {token}")
-    print(f"  logs:   {os.path.join(config_dir, LOG_NAME)}")
+    print("No token: devdash listens on the tailnet address and nothing else, so")
+    print("the only thing that can reach it is a device on your tailnet. Bookmark")
+    print("that URL from the phone (Share → Add to Home Screen) and you are done.")
+    print(f"\n  logs:   {os.path.join(config_dir, LOG_NAME)}")
     print(f"  config: {os.path.join(config_dir, 'config.json')}")
     print("\nUntil a Buildkite token is in devreap's config, the build columns are")
     print("blank — devdash reads thresholds and the Buildkite token from devreap.")

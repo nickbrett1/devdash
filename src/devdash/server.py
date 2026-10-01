@@ -6,12 +6,15 @@ be installed before the thing that *stops memory-hungry containers* will run.
 
 Two rules this file exists to enforce:
 
-  * nothing mutating is reachable without the token, and nothing mutating is a
-    GET (M2's open/close arrive as POSTs);
+  * nothing mutating is a GET — a link prefetcher or a phone's back button must
+    not be able to stop a container (M2's open/close arrive as POSTs);
   * the server never listens on 0.0.0.0 by default — see config.bind_host.
+
+That second rule *is* the access control. There is no token: the only thing
+that can reach this port is a device on the tailnet, and a shared secret in a
+URL was one more thing to paste into a phone for no real gain.
 """
 
-import hmac
 import json
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -20,7 +23,6 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from . import actions, jobs, projects, repos
 
-COOKIE = "devdash_token"
 HEALTH_BODY = b'{"status": "ok"}'
 
 _TRUTHY = ("1", "true", "on", "yes")
@@ -50,9 +52,8 @@ def web_root(cfg):
 
 
 class Handler(SimpleHTTPRequestHandler):
-    """JSON API + static files, behind one shared secret."""
+    """JSON API + the built frontend. Reachable only from the tailnet."""
 
-    token = ""
     root = None
 
     # -- helpers ----------------------------------------------------------
@@ -66,60 +67,19 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _cookie_token(self):
-        for part in (self.headers.get("Cookie") or "").split(";"):
-            name, _, value = part.strip().partition("=")
-            if name == COOKIE:
-                return value
-        return ""
-
-    def _authorised(self):
-        """Bearer header, cookie, or ?token= (the phone's first visit)."""
-        if not self.token:
-            return True
-        auth = self.headers.get("Authorization") or ""
-        candidates = []
-        if auth.startswith("Bearer "):
-            candidates.append(auth[len("Bearer "):])
-        candidates.append(self._cookie_token())
-        candidates += parse_qs(urlparse(self.path).query).get("token", [])
-        return any(c and hmac.compare_digest(c, self.token) for c in candidates)
-
-    def _unauthorised(self):
-        body = b'{"error": "unauthorised"}'
-        self.send_response(401)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("WWW-Authenticate", 'Bearer realm="devdash"')
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
     # -- routes -----------------------------------------------------------
 
     def do_GET(self):
         path = urlparse(self.path).path
 
-        # Unauthenticated on purpose: the LaunchAgent and any probe need a
-        # cheap liveness answer, and it reveals nothing.
+        # A cheap liveness answer for any probe. Everything else is as open as
+        # this, since the tailnet is what gates access.
         if path == "/healthz":
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(HEALTH_BODY)))
             self.end_headers()
             self.wfile.write(HEALTH_BODY)
-            return
-
-        if not self._authorised():
-            self._unauthorised()
-            return
-
-        # Trade ?token=… for a cookie and drop it from the URL, so the secret
-        # does not linger in phone browser history or a shared link.
-        if "token" in parse_qs(urlparse(self.path).query):
-            self.send_response(303)
-            self.send_header("Location", path or "/")
-            self.send_header("Set-Cookie", f"{COOKIE}={self.token}; HttpOnly; SameSite=Lax; Path=/")
-            self.end_headers()
             return
 
         try:
@@ -151,13 +111,8 @@ class Handler(SimpleHTTPRequestHandler):
         self._serve_static()
 
     def do_POST(self):
-        """The only mutating surface, and therefore never reachable without
-        the token and never a GET: a link prefetcher or a phone's back button
-        must not be able to stop a container."""
-        if not self._authorised():
-            self._unauthorised()
-            return
-
+        """The only mutating surface, and never a GET: a link prefetcher or a
+        phone's back button must not be able to stop a container."""
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
         parts = [unquote(p) for p in path.split("/") if p]
@@ -252,8 +207,7 @@ class Handler(SimpleHTTPRequestHandler):
         """One line per request on stderr, into the LaunchAgent's log."""
 
 
-def serve(host, port, token, root):
-    Handler.token = token or ""
+def serve(host, port, root):
     Handler.root = root
     # SimpleHTTPRequestHandler serves relative to its `directory`, NOT the cwd
     # and not Handler.root — without this it happily lists the whole repository

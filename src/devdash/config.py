@@ -5,7 +5,6 @@ Lives at ~/.devdash/config.json (mode 600):
     {
       "host":  "",                  # bind address; "" = auto: tailnet IP, else 127.0.0.1
       "port":  3990,
-      "token": "<shared secret>",   # generated on first run when empty
       "web_dir": "web/dist"
     }
 
@@ -13,11 +12,15 @@ Thresholds are deliberately NOT duplicated here. The Buildkite token and org,
 the pipeline map, and the keep/ignore lists all come from **devreap's** config
 (~/.devreap/config.json), so devdash and the nightly reap can never disagree
 about what "idle" means. devdash adds only what is about *being a server*.
+
+**There is no token.** Access control is the *bind*: devdash listens on the
+tailnet address and nothing else (see bind_host), so the only thing that can
+reach it is a device on the tailnet. A shared secret on top of that was one
+more thing to paste into a phone for no real gain — see the README.
 """
 
 import json
 import os
-import secrets
 
 CONFIG_DIR_NAME = ".devdash"
 CONFIG_FILE_NAME = "config.json"
@@ -33,11 +36,14 @@ def config_path(home=None):
 
 
 def _defaults():
-    return {"host": "", "port": DEFAULT_PORT, "token": "", "web_dir": "web/dist"}
+    return {"host": "", "port": DEFAULT_PORT, "web_dir": "web/dist"}
 
 
 def save(cfg, home=None):
-    """Atomically write config with 0600 permissions (it holds the token)."""
+    """Atomically write config with 0600 permissions.
+
+    0600 is now habit rather than necessity — there is no secret here — but a
+    config that might later grow one should not have to remember to tighten."""
     path = config_path(home)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
@@ -49,7 +55,7 @@ def save(cfg, home=None):
 
 
 def load(home=None):
-    """Load config, creating a default one (with a fresh token) if missing."""
+    """Load config, creating a default one if missing."""
     cfg = _defaults()
     path = config_path(home)
     if os.path.exists(path):
@@ -60,8 +66,9 @@ def load(home=None):
                 cfg.update(data)
         except (OSError, ValueError) as e:
             raise RuntimeError(f"Could not read {path}: {e}") from e
-    if not cfg.get("token"):
-        cfg["token"] = secrets.token_urlsafe(24)
+    # A "token" left in an older config is ignored, not honoured: the server
+    # does not read it any more. Dropped so the file stops implying otherwise.
+    cfg.pop("token", None)
     save(cfg, home=home)
     return cfg
 
