@@ -269,9 +269,14 @@ start a project — it reuses a running container rather than rebuilding it
 But when the container is running *and* devdash can see its window, `Open`
 would only re-focus something the user is already looking at, so the row offers
 `Close` alone. It comes back for a stopped container that still has a stale
-window, where reopening is the point. While the screen is locked the window
-flags read false for everything, so the button stays visible — the harmless
-direction.
+window, where reopening is the point.
+
+`Open` is also hidden entirely while `screen_locked` is true. Every window
+reads as closed then, open or not, so the button would be a guess — and the
+wrong guess stacks a second window on a Mac nobody can see. An absent project
+(which has no other button) says *"Open hidden — screen locked"* in its place,
+so the empty row reads as a decision rather than a rendering failure. Unlock and
+the button returns on the next poll.
 
 ### Jobs
 

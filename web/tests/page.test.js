@@ -130,7 +130,7 @@ function project(over = {}) {
 }
 
 /** Stub fetch with one project and a canned answer for the next POST. */
-function stubAction(row = project(), postBody = {}, postStatus = 200) {
+function stubAction(row = project(), postBody = {}, postStatus = 200, screenLocked = false) {
   const calls = [];
   vi.stubGlobal(
     "fetch",
@@ -140,7 +140,7 @@ function stubAction(row = project(), postBody = {}, postStatus = 200) {
         return jsonResponse(postBody, postStatus);
       }
       return String(url).includes("/api/projects")
-        ? jsonResponse({ projects: [row], window_error: null, window_titles: 0 })
+        ? jsonResponse({ projects: [row], window_error: null, window_titles: 0, screen_locked: screenLocked })
         : jsonResponse(STATUS);
     }),
   );
@@ -301,6 +301,23 @@ describe("open and close", () => {
     stubAction(project({ state: "stopped", window_open: true }));
     render(Page);
     expect(await screen.findByRole("button", { name: "Open" })).toBeInTheDocument();
+  });
+
+  it("hides Open entirely while the screen is locked", async () => {
+    // Every window reads as closed while the screen is locked, so devdash
+    // cannot tell whether one is already open — it declines to guess rather
+    // than stack a second window nobody can see.
+    stubAction(project({ state: "running", window_open: false }), {}, 200, true);
+    render(Page);
+    expect(await screen.findByRole("button", { name: "Close" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open" })).not.toBeInTheDocument();
+  });
+
+  it("says why an absent project has no button while locked", async () => {
+    stubAction(project({ state: "absent", container: null }), {}, 200, true);
+    render(Page);
+    expect(await screen.findByText("Open hidden — screen locked")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open" })).not.toBeInTheDocument();
   });
 
   it("offers only Open for a project with no container", async () => {

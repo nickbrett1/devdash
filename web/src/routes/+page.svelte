@@ -18,6 +18,16 @@
 	// with zero windows and no error, so `windowTitles` is not a fact. The
 	// strip says so instead of showing a confident "0".
 	let screenLocked = $state(false);
+
+	// Open reuses a running container and puts a window on the Mac, so it is
+	// pointless once devdash can already see that window — and unanswerable
+	// while the screen is locked, when every window reads as closed whether or
+	// not it is. Rather than offer it on a guess (and risk stacking a second
+	// window nobody can see), it is hidden in both cases.
+	function canOpen(p) {
+		if (screenLocked) return false;
+		return p.state !== 'running' || !p.window_open;
+	}
 	let error = $state('');
 	let loading = $state(true);
 	let updated = $state(null);
@@ -348,13 +358,19 @@
 
 					<div class="actions">
 						{#if p.state === 'absent'}
-							<button
-								class="wide"
-								disabled={isRunning(p.name)}
-								onclick={() => startJob(`/api/projects/${encodeURIComponent(p.name)}/open`, {}, p.name)}
-							>
-								{isRunning(p.name) ? 'Opening…' : 'Open'}
-							</button>
+							{#if canOpen(p)}
+								<button
+									class="wide"
+									disabled={isRunning(p.name)}
+									onclick={() => startJob(`/api/projects/${encodeURIComponent(p.name)}/open`, {}, p.name)}
+								>
+									{isRunning(p.name) ? 'Opening…' : 'Open'}
+								</button>
+							{:else}
+								<!-- The one row type with no other button, so say why it is empty
+								     rather than leaving it looking broken. -->
+								<span class="suppressed">Open hidden — screen locked</span>
+							{/if}
 						{:else}
 							<button
 								disabled={!!busy[p.name]}
@@ -363,11 +379,7 @@
 							>
 								{busy[p.name] === 'close' ? 'Closing…' : 'Close'}
 							</button>
-							<!-- Hidden while a window is already open on a running container:
-							     it would only reuse the container and re-focus a window the
-							     user can already see. It stays for a *stopped* container
-							     with a stale window, where reopening is still the point. -->
-							{#if p.state !== 'running' || !p.window_open}
+							{#if canOpen(p)}
 								<button
 									disabled={isRunning(p.name)}
 									title="reopen / rebuild and open a window"
@@ -634,6 +646,13 @@
 		flex-wrap: wrap;
 		gap: 0.5rem;
 		margin-top: 0.6rem;
+	}
+	/* Stands in for a button that is deliberately withheld, so an empty action
+	   row reads as a decision rather than a rendering failure. */
+	.suppressed {
+		align-self: center;
+		font-size: 0.8rem;
+		color: #6b7280;
 	}
 	.actions button {
 		min-width: 4.5rem;
