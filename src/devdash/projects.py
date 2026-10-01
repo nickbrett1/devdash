@@ -136,6 +136,16 @@ def invalidate():
         memo.clear()
 
 
+def memory():
+    """{container id: bytes} for everything running, from the sampled stats.
+
+    The same sample /api/status shows, so a row's figure and the strip's
+    footprint cannot disagree. Stopped containers are absent — they are not in
+    `docker stats`, and a stopped container is using nothing.
+    """
+    return _status_sample.get()["stats"]
+
+
 def reset():
     """Test hook: drop every memo between cases."""
     invalidate()
@@ -190,7 +200,7 @@ def _last_build(org, slug, token, now):
     return days, label
 
 
-def rows(now=None, probe_builds=True):
+def rows(now=None, probe_builds=True, memory=None):
     """One dict per project: running first, then stopped, then absent, each
     group by name. Read-only: no container is started, stopped or otherwise
     touched.
@@ -198,6 +208,11 @@ def rows(now=None, probe_builds=True):
     The order is the answer to the only question the page is opened to ask —
     what is up, and what is not — so it is decided here rather than left to
     each reader to sort for itself.
+
+    `memory` is {container id: bytes} — the per-container figures from the
+    sampled docker stats. The server passes `projects.memory()` so a row carries
+    `mem_bytes`; a caller that has not paid for a sample gets None per row
+    rather than a hidden two-second read.
     """
     cfg = reap_config.load()
     now = now or dt.datetime.now(dt.UTC)
@@ -245,6 +260,9 @@ def rows(now=None, probe_builds=True):
             "path": path,
             "container": c["name"] if c else None,
             "state": state,
+            # None for a stopped or absent project: docker stats only counts
+            # what is running, and a stopped container is using nothing.
+            "mem_bytes": memory.get(c["id"]) if (memory and c) else None,
             "live_session": live,
             "live_evidence": evidence,
             "window_open": path in open_windows,

@@ -109,6 +109,7 @@ function project(over = {}) {
     name: "acme",
     path: "/w/acme",
     state: "running",
+    mem_bytes: null,
     live_session: false,
     live_evidence: "",
     window_open: false,
@@ -257,6 +258,23 @@ describe("open and close", () => {
     render(Page);
     expect(await screen.findByRole("button", { name: "Close" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Open" })).toBeInTheDocument();
+  });
+
+  it("shows what each running container is using", async () => {
+    stubFetch({
+      ...PROJECTS,
+      projects: [
+        project({ name: "acme", mem_bytes: 1_500_000_000 }),
+        project({ name: "example-one", state: "stopped", mem_bytes: null }),
+        project({ name: "greenfield", state: "absent", mem_bytes: null }),
+      ],
+    });
+    render(Page);
+
+    expect(await screen.findByText("1.5 GB")).toBeInTheDocument();
+    // A stopped or absent container is using nothing, and "—" beside a state
+    // that already says "absent" would be noise.
+    expect(screen.queryByText("—")).not.toBeInTheDocument();
   });
 
   it("offers only Open for a project with no container", async () => {

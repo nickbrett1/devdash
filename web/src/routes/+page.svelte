@@ -311,7 +311,12 @@
 				<li class="project">
 					<div class="top">
 						<span class="name">{p.name}</span>
-						<span class="state {p.state}">{p.state}</span>
+						<span class="right">
+							{#if p.mem_bytes}
+								<span class="mem" title="memory this container is using">{bytes(p.mem_bytes)}</span>
+							{/if}
+							<span class="state {p.state}">{p.state}</span>
+						</span>
 					</div>
 					<div class="badges">
 						{#if p.live_session}
@@ -548,6 +553,16 @@
 	}
 	.name {
 		font-weight: 600;
+	}
+	.right {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.5rem;
+	}
+	.mem {
+		font-size: 0.8rem;
+		color: #94a3b8;
+		font-variant-numeric: tabular-nums;
 	}
 	.state {
 		font-size: 0.75rem;

@@ -29,7 +29,8 @@ def empty_job_registry():
 @pytest.fixture
 def live(monkeypatch):
     """A real server on an ephemeral port, with /api/* stubbed."""
-    monkeypatch.setattr(projects, "rows", lambda: ([{"name": "acme"}], {"window_error": None, "window_titles": 1}))
+    monkeypatch.setattr(projects, "rows",
+                        lambda **kw: ([{"name": "acme"}], {"window_error": None, "window_titles": 1}))
     monkeypatch.setattr(projects, "status", lambda: {"vm_mem_total": 1})
     # serve() warms the read caches in a thread; that is real docker, and this
     # is not the test for it.
@@ -315,8 +316,22 @@ def test_unknown_routes_are_404(live):
     assert post(live, "/api/projects", None)[0] == 404
 
 
+def test_projects_carries_the_memory_sample_to_the_rows(live, monkeypatch):
+    """The per-row figures come from the same stats sample the strip shows, so
+    the route has to hand it to the join."""
+    seen = {}
+    monkeypatch.setattr(projects, "memory", lambda: {"c1": 42})
+    monkeypatch.setattr(projects, "rows",
+                        lambda **kw: (seen.update(kw) or [{"name": "acme"}], {"window_titles": 1}))
+
+    status, _, _body = get(live, "/api/projects")
+
+    assert status == 200
+    assert seen["memory"] == {"c1": 42}
+
+
 def test_a_broken_join_is_a_500_not_a_dead_server(live, monkeypatch):
-    def boom():
+    def boom(**kw):
         raise RuntimeError("docker is not reachable")
 
     monkeypatch.setattr(projects, "rows", boom)

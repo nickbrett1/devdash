@@ -102,7 +102,7 @@ class Handler(SimpleHTTPRequestHandler):
 
         try:
             if path == "/api/projects":
-                rows, meta = projects.rows()
+                rows, meta = projects.rows(memory=projects.memory())
                 self._send_json({"projects": rows, **meta})
                 return
             if path == "/api/status":

@@ -166,6 +166,60 @@ def test_rows_are_ordered_running_then_stopped_then_absent(tmp_path, monkeypatch
     ]
 
 
+def test_rows_carry_each_containers_memory(tmp_path, monkeypatch):
+    """The figure comes from the same docker stats sample the strip shows, so a
+    row and the footprint cannot disagree."""
+    for name in ("acme", "example-one"):
+        (tmp_path / name).mkdir()
+    monkeypatch.setattr(projects.reap_config, "load", _fake_reap_config(tmp_path))
+    monkeypatch.setattr(projects.containers, "list_devcontainers", lambda: [
+        {"id": "c1", "name": "acme-dev", "workspace": str(tmp_path / "acme"),
+         "running": True, "started_at": None},
+        {"id": "c2", "name": "example-one-dev", "workspace": str(tmp_path / "example-one"),
+         "running": False, "started_at": None},
+    ])
+    monkeypatch.setattr(projects.containers, "active_session", lambda cid: (False, ""))
+    monkeypatch.setattr(projects.vscode, "windows_for", lambda ws, process=None: (set(), None))
+    monkeypatch.setattr(projects.vscode, "list_window_titles", lambda process=None: ([], None))
+
+    rows, _ = projects.rows(probe_builds=False, memory={"c1": 412 * 2 ** 20})
+
+    # c2 is stopped, so docker stats never mentions it — and it is using
+    # nothing, which is not the same as unknown.
+    assert {r["name"]: r["mem_bytes"] for r in rows} == {
+        "acme": 412 * 2 ** 20, "example-one": None,
+    }
+
+
+def test_rows_have_no_memory_when_no_sample_was_paid_for(tmp_path, monkeypatch):
+    """A caller that did not ask for a sample gets no column, rather than a
+    hidden two-second docker read inside what looks like a pure join."""
+    (tmp_path / "acme").mkdir()
+    monkeypatch.setattr(projects.reap_config, "load", _fake_reap_config(tmp_path))
+    monkeypatch.setattr(projects.containers, "list_devcontainers", lambda: [
+        {"id": "c1", "name": "acme-dev", "workspace": str(tmp_path / "acme"),
+         "running": True, "started_at": None},
+    ])
+    monkeypatch.setattr(projects.containers, "active_session", lambda cid: (False, ""))
+    monkeypatch.setattr(projects.vscode, "windows_for", lambda ws, process=None: (set(), None))
+    monkeypatch.setattr(projects.vscode, "list_window_titles", lambda process=None: ([], None))
+    monkeypatch.setattr(projects, "_docker", lambda args, timeout=30: pytest.fail("no sample was asked for"))
+
+    rows, _ = projects.rows(probe_builds=False)
+
+    assert [r["mem_bytes"] for r in rows] == [None]
+
+
+def test_memory_is_the_sample_the_status_strip_uses(monkeypatch):
+    """One stats call answers both, which is why the per-row figures add up to
+    the footprint."""
+    monkeypatch.setattr(projects, "_docker", _fake_docker)
+
+    assert projects.memory() == {
+        "aaa": 1 * 2 ** 30, "bbb": 512 * 2 ** 20, "ccc": 256 * 2 ** 20,
+    }
+
+
 def test_rows_keeps_a_container_whose_workspace_is_gone(tmp_path, monkeypatch):
     """A moved/deleted workspace still holds RAM, so it must not vanish."""
     ghost = tmp_path / "ghost"
@@ -277,15 +331,17 @@ def test_last_build_is_cached(tmp_path, monkeypatch):
 # -- the status strip -------------------------------------------------------
 
 
-def test_status_sums_only_devcontainer_footprint(monkeypatch):
-    def fake_docker(args, timeout=30):
-        if args[:1] == ["info"]:
-            return _completed("16819609600")
-        if args[:1] == ["stats"]:
-            return _completed("aaa 1GiB / 2GiB\nbbb 512MiB / 2GiB\nccc 256MiB / 2GiB\n")
-        return _completed("", returncode=1)
+def _fake_docker(args, timeout=30):
+    """A docker that reports a 15.66 GiB VM with three containers running."""
+    if args[:1] == ["info"]:
+        return _completed("16819609600")
+    if args[:1] == ["stats"]:
+        return _completed("aaa 1GiB / 2GiB\nbbb 512MiB / 2GiB\nccc 256MiB / 2GiB\n")
+    return _completed("", returncode=1)
 
-    monkeypatch.setattr(projects, "_docker", fake_docker)
+
+def test_status_sums_only_devcontainer_footprint(monkeypatch):
+    monkeypatch.setattr(projects, "_docker", _fake_docker)
 
     status = projects.status(devcontainer_ids=["aaa", "bbb"])
 
