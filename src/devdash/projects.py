@@ -353,8 +353,14 @@ def _docker(args, timeout=30):
 
 
 def status(devcontainer_ids=None):
-    """VM memory, container counts and the devcontainer footprint — the
+    """VM memory, devcontainer counts and the devcontainer footprint — the
     numbers that answer "do I need to close something".
+
+    Both counts are over the *devcontainers*, not every container on the VM.
+    `docker stats` sees unrelated containers too (mcp servers, databases, and
+    so on), so counting those made "running" exceed the total. How loaded the
+    VM is overall is the memory meter's job; these two figures are the ones
+    devdash can act on.
 
     The docker calls come from a memo, so this is a join over two cached
     samples and a count; only a cold cache waits."""
@@ -362,14 +368,16 @@ def status(devcontainer_ids=None):
     stats = sample["stats"]
     if devcontainer_ids is None:
         devcontainer_ids = [c["id"] for c in _containers.get()]
-    footprint = sum(bytes_ for cid, bytes_ in stats.items() if cid in set(devcontainer_ids))
+    ids = set(devcontainer_ids)
 
     return {
         "vm_mem_total": sample["mem_total"],
         "vm_mem_used": sample["used"],
         "container_count": len(devcontainer_ids),
-        "running_count": len(stats),
-        "devcontainer_footprint": footprint,
+        "running_count": len(ids & stats.keys()),
+        "devcontainer_footprint": sum(
+            bytes_ for cid, bytes_ in stats.items() if cid in ids
+        ),
     }
 
 

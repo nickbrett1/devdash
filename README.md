@@ -227,7 +227,7 @@ Read-only, GET:
 | --- | --- |
 | `/healthz` | `{"status":"ok"}` |
 | `/api/projects` | the joined rows — running, then stopped, then absent, each by name — plus `window_error`, `window_titles` and `screen_locked`. Each row carries `mem_bytes`, the memory that container is using (null when it is not running) |
-| `/api/status` | VM memory and container counts |
+| `/api/status` | VM memory, the devcontainer footprint, and how many devcontainers are running versus how many exist. Both counts are over the devcontainers, so `running_count <= container_count`: `docker stats` sees unrelated containers too, and counting those once made "running" exceed the total |
 | `/api/repos` | repos with no workspace here yet, plus a listing error if any |
 | `/api/jobs/<id>` | one job's state and log |
 | `/api/jobs` | the jobs still running |
@@ -400,7 +400,7 @@ widget pointing at `/tile.html`.
 `/tile.html` is a route that renders `StatusStrip` and nothing else, so the
 card carries exactly the same summary as the top of the page — the VM memory
 meter with used *and* total, the devcontainer footprint, and the running/total
-container counts — and cannot drift from it. A `customapi` widget was the first
+devcontainer counts — and cannot drift from it. A `customapi` widget was the first
 attempt: it is a fixed list of label/value pairs, so it had no room for the
 meter and could not show the total, only what is in use.
 

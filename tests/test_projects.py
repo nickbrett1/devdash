@@ -369,10 +369,24 @@ def test_status_sums_only_devcontainer_footprint(monkeypatch):
 
     assert status["vm_mem_total"] == 16819609600
     assert status["vm_mem_used"] == pytest.approx(1 * 2 ** 30 + 512 * 2 ** 20 + 256 * 2 ** 20)
-    # ccc is running but is not a devcontainer, so it is not in either count.
+    # ccc is running but is not a devcontainer, so it is in neither count:
+    # "running" is devcontainers up, not every container on the VM. Otherwise
+    # it could exceed the total, which is nonsense on a strip that shows both.
     assert status["devcontainer_footprint"] == pytest.approx(1 * 2 ** 30 + 512 * 2 ** 20)
     assert status["container_count"] == 2
-    assert status["running_count"] == 3
+    assert status["running_count"] == 2
+
+
+def test_status_running_counts_devcontainers_only(monkeypatch):
+    """`running` is devcontainers that are up, so it can never exceed the
+    total. ccc is up but is not a devcontainer; zzz is a devcontainer that is
+    stopped — neither is "running"."""
+    monkeypatch.setattr(projects, "_docker", _fake_docker)
+
+    status = projects.status(devcontainer_ids=["aaa", "zzz"])
+
+    assert status["container_count"] == 2
+    assert status["running_count"] == 1
 
 
 def test_status_is_not_fatal_when_docker_is_missing(monkeypatch):
