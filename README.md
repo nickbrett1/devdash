@@ -193,10 +193,13 @@ the screen is locked or asleep**, exactly as it does when no window is open.
 (`screencapture` fails with "could not create image from display" in the same
 state, which is how the two cases were told apart.)
 
-That ambiguity is the whole reason `/api/projects` carries the raw
-`window_titles` count next to the per-project `window_open` flags: a `0` while
-you know windows are open means the screen is locked, not that a grant was
-lost.
+That ambiguity is why `/api/projects` carries the raw `window_titles` count
+next to the per-project `window_open` flags — and why it also carries
+`screen_locked`, read straight from `ioreg -n Root -d1`
+(`CGSSessionScreenIsLocked` / `IOConsoleLocked`, ~50 ms). The count alone
+cannot tell "nothing is open" from "nobody can see the screen"; the probe can,
+so the strip says **windows hidden — screen locked** instead of showing a
+confident `0` after an Open that actually worked.
 
 M2's Close is still best-effort, but for the ordinary reason — a "save your
 changes?" sheet can block a close — not because the LaunchAgent cannot see
@@ -223,7 +226,7 @@ Read-only, GET:
 | Route | Answer |
 | --- | --- |
 | `/healthz` | `{"status":"ok"}` |
-| `/api/projects` | the joined rows — running, then stopped, then absent, each by name — plus `window_error` and `window_titles`. Each row carries `mem_bytes`, the memory that container is using (null when it is not running) |
+| `/api/projects` | the joined rows — running, then stopped, then absent, each by name — plus `window_error`, `window_titles` and `screen_locked`. Each row carries `mem_bytes`, the memory that container is using (null when it is not running) |
 | `/api/status` | VM memory and container counts |
 | `/api/repos` | repos with no workspace here yet, plus a listing error if any |
 | `/api/jobs/<id>` | one job's state and log |

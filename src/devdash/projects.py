@@ -16,6 +16,8 @@ from contextlib import suppress
 from devreap import buildkite, containers, vscode
 from devreap import config as reap_config
 
+from . import screen
+
 # Reading order for the list: what is up, then what is down but present, then
 # what is only a directory. A row's state is the thing the page exists to show,
 # so it decides the order.
@@ -232,20 +234,23 @@ def rows(now=None, probe_builds=True, memory=None):
 
     running = [c for c in devcontainers if c["running"]]
 
-    # Three independent waits, run at once rather than one after the other:
+    # Four independent waits, run at once rather than one after the other:
     # System Events (two osascript calls, ~0.4s), the live-session probe (three
     # `docker exec`s per running container, ~0.25s each — serial that was the
     # single biggest cost of a poll, and it grows with the number of projects),
-    # and the per-project Buildkite lookup (one HTTPS call each, ~0.3s, which
-    # is what a *cold* first poll spends its seconds on). The two System Events
-    # calls stay in one thread: they share System Events, and serialising them
-    # keeps the grant check honest.
-    with ThreadPoolExecutor(max_workers=3) as pool:
+    # the per-project Buildkite lookup (one HTTPS call each, ~0.3s, which is
+    # what a *cold* first poll spends its seconds on), and the screen-lock
+    # probe (~50ms — cheap, but on the request path, so it rides along). The
+    # two System Events calls stay in one thread: they share System Events, and
+    # serialising them keeps the grant check honest.
+    with ThreadPoolExecutor(max_workers=4) as pool:
         windows = pool.submit(_windows, paths)
         sessions = pool.submit(_live_sessions, running)
+        lock = pool.submit(screen.locked)
         builds = pool.submit(_last_builds, sorted(paths), org, cfg, token, now) if probe_builds else None
         open_windows, window_error, titles = windows.result()
         lives = sessions.result()
+        screen_locked = lock.result()
         last_builds = builds.result() if builds else {}
 
     out = []
@@ -274,7 +279,14 @@ def rows(now=None, probe_builds=True, memory=None):
     # and by name inside each group, so a row only moves when its container
     # does.
     out.sort(key=lambda r: (_STATE_RANK[r["state"]], r["name"]))
-    return out, {"window_error": window_error, "window_titles": len(titles)}
+    return out, {
+        "window_error": window_error,
+        "window_titles": len(titles),
+        # While the screen is locked System Events reports every process with
+        # zero windows and no error, so the count above cannot be read as fact.
+        # Say so, rather than showing a confident "0".
+        "screen_locked": screen_locked,
+    }
 
 
 def _last_builds(names, org, cfg, token, now):

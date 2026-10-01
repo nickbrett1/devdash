@@ -19,10 +19,14 @@ UTC = dt.UTC
 
 
 @pytest.fixture(autouse=True)
-def clean_caches():
+def clean_caches(monkeypatch):
     # The memos and the build cache outlive a request on purpose, so every case
     # starts from an empty one.
     projects.reset()
+    # The lock probe shells out to ioreg, so it is stubbed for every case: a
+    # test suite that reads the machine's real lock state is not a test. Cases
+    # that care about it opt in.
+    monkeypatch.setattr(projects.screen, "locked", lambda: False)
     yield
     projects.reset()
 
@@ -134,7 +138,7 @@ def test_rows_joins_workspaces_containers_windows_and_builds(tmp_path, monkeypat
 
     # The raw title count is separate from the matched set: it is the only
     # signal that distinguishes "no windows" from "cannot see windows".
-    assert meta == {"window_error": None, "window_titles": 2}
+    assert meta == {"window_error": None, "window_titles": 2, "screen_locked": False}
 
 
 def test_rows_are_ordered_running_then_stopped_then_absent(tmp_path, monkeypatch):
@@ -252,6 +256,24 @@ def test_rows_degrades_when_system_events_is_unavailable(tmp_path, monkeypatch):
     assert rows[0]["window_open"] is False
     assert meta["window_error"] == "not authorized"
     assert meta["window_titles"] == 0
+
+
+def test_rows_say_when_the_screen_is_locked(tmp_path, monkeypatch):
+    # A locked screen reports zero windows for every app with no error, so the
+    # count on its own reads as "nothing is open" — the meta has to carry the
+    # reason it cannot be trusted.
+    (tmp_path / "acme").mkdir()
+    monkeypatch.setattr(projects.reap_config, "load", _fake_reap_config(tmp_path))
+    monkeypatch.setattr(projects.containers, "list_devcontainers", list)
+    monkeypatch.setattr(projects.vscode, "windows_for", lambda ws, process=None: (set(), None))
+    monkeypatch.setattr(projects.vscode, "list_window_titles", lambda process=None: ([], None))
+    monkeypatch.setattr(projects.screen, "locked", lambda: True)
+
+    _rows, meta = projects.rows(probe_builds=False)
+
+    assert meta["screen_locked"] is True
+    assert meta["window_titles"] == 0
+    assert meta["window_error"] is None  # locked is not an error
 
 
 def test_probe_builds_false_makes_no_network_call(tmp_path, monkeypatch):

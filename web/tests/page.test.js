@@ -92,6 +92,15 @@ describe("the status strip", () => {
     expect(screen.getByText("3")).toBeInTheDocument();
     expect(screen.getByText("vscode windows")).toBeInTheDocument();
   });
+
+  it("refuses to state a window count while the screen is locked", async () => {
+    // A locked screen reports zero windows for every app with no error, so a
+    // bare "0" reads as "nothing open" — the strip must say why it cannot know.
+    stubFetch({ ...PROJECTS, window_titles: 0, screen_locked: true });
+    render(Page);
+    expect(await screen.findByText("windows hidden — screen locked")).toBeInTheDocument();
+    expect(screen.queryByText("vscode windows")).not.toBeInTheDocument();
+  });
 });
 
 describe("when the token is missing", () => {

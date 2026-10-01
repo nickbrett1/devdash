@@ -14,6 +14,10 @@
 	let status = $state(null);
 	let windowTitles = $state(null);
 	let windowError = $state('');
+	// While the Mac's screen is locked, System Events reports every process
+	// with zero windows and no error, so `windowTitles` is not a fact. The
+	// strip says so instead of showing a confident "0".
+	let screenLocked = $state(false);
 	let error = $state('');
 	let loading = $state(true);
 	let updated = $state(null);
@@ -55,6 +59,7 @@
 			projects = body.projects || [];
 			windowTitles = typeof body.window_titles === 'number' ? body.window_titles : null;
 			windowError = body.window_error || '';
+			screenLocked = !!body.screen_locked;
 			status = await s.json();
 			error = '';
 			updated = new Date();
@@ -294,8 +299,14 @@
 					<span class="k">devcontainers</span>
 				</div>
 				<div class="figure">
-					<span class="n">{windowTitles ?? '—'}</span>
-					<span class="k" title={windowError || 'windows System Events can see'}>vscode windows</span>
+					<span class="n">{screenLocked ? '?' : (windowTitles ?? '—')}</span>
+					{#if screenLocked}
+						<span class="k locked" title="The Mac's screen is locked. While it is, System Events reports zero windows for every app without an error, so the window count cannot be trusted.">
+							windows hidden — screen locked
+						</span>
+					{:else}
+						<span class="k" title={windowError || 'windows System Events can see'}>vscode windows</span>
+					{/if}
 				</div>
 			</div>
 		</section>
@@ -528,6 +539,11 @@
 	.figure .k {
 		font-size: 0.72rem;
 		color: #94a3b8;
+	}
+	/* Not an error — the page is fine — just a figure that cannot be read as
+	   fact right now. Amber sets it apart from the ordinary grey labels. */
+	.figure .k.locked {
+		color: #f0c14b;
 	}
 	.projects {
 		list-style: none;
