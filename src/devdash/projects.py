@@ -6,11 +6,35 @@ live session, what counts as a human build) have exactly one home.
 """
 
 import datetime as dt
+import json
 import os
 import subprocess
 
+from devopen import opener
 from devreap import buildkite, containers, vscode
 from devreap import config as reap_config
+
+# remoteUser per workspace, read from the devcontainer config on disk. Cached
+# because the list is rebuilt on every poll and this is a file read per row.
+_user_cache = {}
+
+
+def _remote_user(path):
+    """The `remoteUser` from the repo's devcontainer config (devopen's default
+    is 'vscode'). Read from disk rather than asked of Docker: a `docker exec`
+    per project would be a process per row on every poll."""
+    if path in _user_cache:
+        return _user_cache[path]
+    user = "vscode"
+    for name in (".devcontainer/devcontainer.json", ".devcontainer.json"):
+        try:
+            with open(os.path.join(path, name), encoding="utf-8") as f:
+                user = json.load(f).get("remoteUser") or user
+        except (OSError, ValueError):
+            continue
+        break
+    _user_cache[path] = user
+    return user
 
 # The last-human-build lookup is one HTTP call per project, and the UI
 # refreshes. Six projects on a 5-minute TTL is cheaper than the same six on
@@ -117,6 +141,12 @@ def rows(now=None, probe_builds=True):
             "live_session": live,
             "live_evidence": evidence,
             "window_open": path in open_windows,
+            # A Blink Shell deep link for the phone. devopen registers the
+            # container under the workspace name, so the two agree by
+            # construction. Only offered while the container is running —
+            # the link is useless (and misleading) otherwise.
+            "blink": (opener.blink_url(name, _remote_user(path))
+                      if state == "running" else None),
             "pipeline": pipeline_for(name, cfg),
             "last_human_build_days": days,
             "last_build": label,

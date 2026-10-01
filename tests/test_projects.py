@@ -113,6 +113,8 @@ def test_rows_joins_workspaces_containers_windows_and_builds(tmp_path, monkeypat
     a = rows[0]
     assert a["state"] == "absent"
     assert a["container"] is None
+    # No container, so nothing to reach: a Blink link would be a lie.
+    assert a["blink"] is None
     assert a["live_session"] is False
     assert a["window_open"] is True
     assert a["pipeline"] == "acme"
@@ -122,6 +124,9 @@ def test_rows_joins_workspaces_containers_windows_and_builds(tmp_path, monkeypat
     e = rows[1]
     assert e["state"] == "running"
     assert e["container"] == "example-one-dev"
+    # devopen registers the container under the workspace name, so the phone
+    # link and the project agree by construction; remoteUser defaults to vscode.
+    assert e["blink"] == "blink://host/?host=example-one&username=vscode&port=22"
     assert e["live_session"] is True
     assert e["live_evidence"] == "tmux: attached"
     assert e["window_open"] is False

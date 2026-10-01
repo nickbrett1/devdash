@@ -40,6 +40,8 @@ def rows(monkeypatch):
 
     monkeypatch.setattr(projects, "rows", fake_rows)
     monkeypatch.setattr(actions.reap_config, "load", lambda: {"workspaces_dir": "/w"})
+    # Default: no tailscale authkey configured, so `open` stays silent.
+    monkeypatch.setattr(actions.devopen_config, "load", lambda: {"tailscale_authkey": ""})
     return state
 
 
@@ -146,6 +148,23 @@ def test_open_reuses_devopen_with_the_safe_defaults(rows, monkeypatch):
     # A server cannot answer a prompt, so tailscale must never be None ("ask").
     assert seen["tailscale"] is False
     assert seen["fresh"] is False and seen["clean"] is False
+
+
+def test_open_registers_tailscale_when_there_is_a_key(rows, monkeypatch):
+    """Registering is most of the point of opening from a phone — the Blink link
+    devdash shows is only real once the container has a MagicDNS name. Without a
+    key, `tailscale up` wants a browser and the server cannot help, so it stays
+    silent rather than hanging."""
+    seen = {}
+    monkeypatch.setattr(actions.opener, "open_repo",
+                        lambda repo_url, **kw: seen.update(kw) or "uri")
+    monkeypatch.setattr(actions.devopen_config, "load", lambda: {"tailscale_authkey": "tskey-x"})
+    actions.open_project("acme")
+    assert seen["tailscale"] is True
+
+    monkeypatch.setattr(actions.devopen_config, "load", lambda: {"tailscale_authkey": "  "})
+    actions.open_project("acme")
+    assert seen["tailscale"] is False
 
 
 def test_open_threads_fresh_and_clean_through(rows, monkeypatch):

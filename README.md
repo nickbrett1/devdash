@@ -242,6 +242,27 @@ leaves `fresh`/`clean` off unless the body asks for them: every one of
 devopen's prompts is a question a server cannot answer, so it is a parameter
 with a safe default instead.
 
+## On a phone
+
+The page is installable (a manifest, a `standalone` display mode and an
+apple-touch icon in `web/static`), pulls to refresh, and keeps every control at
+the 44 px minimum. The manifest is fetched same-origin, so the browser sends
+the token cookie with it and `start_url: "/"` keeps the secret out of the
+installed app's URL — the cookie is the credential.
+
+Each running project carries a **Blink** link, built as
+`blink://host/?host=<project>&username=<remoteUser>&port=22`. devopen registers
+the container on Tailscale under the workspace name, so the link and the
+project agree by construction; `remoteUser` is read from the repo's
+devcontainer config, defaulting to `vscode` as devopen does. It is only offered
+while the container is running, because that is the only time the name
+resolves.
+
+That link is also why `open` now registers Tailscale when devopen's config has
+an authkey: reaching a project from the phone is most of the point of opening
+it from the phone, and `tailscale up` without a key wants a browser a server
+cannot provide. No key means silence, not a hang.
+
 There are no CLI shims here. `devdash` is a server, installed as a LaunchAgent
 (`install.py`), so there is nothing for a `pip install` to shadow.
 

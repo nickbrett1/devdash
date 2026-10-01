@@ -142,6 +142,32 @@
 		return !!job && job.state === 'running' && job.target === target;
 	}
 
+	// Pull to refresh. iOS Safari in standalone mode has no reload gesture, and
+	// this app is mostly read while standing up. Only fires from the very top of
+	// the page, so it can never fight an ordinary scroll.
+	let pull = $state(0);
+	let pullStart = null;
+
+	function onTouchStart(e) {
+		if (window.scrollY > 0) {
+			pullStart = null;
+			return;
+		}
+		pullStart = e.touches[0].clientY;
+	}
+
+	function onTouchMove(e) {
+		if (pullStart === null) return;
+		const dy = e.touches[0].clientY - pullStart;
+		pull = dy > 0 ? Math.min(90, dy / 2) : 0;
+	}
+
+	function onTouchEnd() {
+		if (pull >= 45) load();
+		pull = 0;
+		pullStart = null;
+	}
+
 	const filteredRepos = $derived(
 		repos === null
 			? []
@@ -220,7 +246,15 @@
 	<meta name="color-scheme" content="light dark" />
 </svelte:head>
 
-<main>
+<main
+	ontouchstart={onTouchStart}
+	ontouchmove={onTouchMove}
+	ontouchend={onTouchEnd}
+	style="padding-top: calc(1rem + {pull}px)"
+>
+	{#if pull > 0}
+		<p class="pull" aria-hidden="true">{pull >= 45 ? 'Release to refresh' : 'Pull to refresh'}</p>
+	{/if}
 	<header>
 		<h1>devdash</h1>
 		<div class="refresh">
@@ -325,6 +359,12 @@
 							</button>
 						{/if}
 					</div>
+					{#if p.blink}
+						<!-- Blink Shell deep link: adds this container as a host. Only
+						     present while the container runs, because that is the only
+						     time the MagicDNS name resolves. -->
+						<a class="blink" href={p.blink}>Blink</a>
+					{/if}
 					{#if note[p.name]}
 						<p class="note" class:bad={!note[p.name].ok} role="status">{note[p.name].text}</p>
 					{/if}
@@ -587,6 +627,25 @@
 	}
 	.note.bad {
 		color: #a1221b;
+	}
+	.pull {
+		margin: 0 0 0.5rem;
+		text-align: center;
+		font-size: 0.8rem;
+		color: #6e6e73;
+	}
+	.blink {
+		display: inline-flex;
+		align-items: center;
+		min-height: 2.75rem;
+		padding: 0 0.9rem;
+		margin-top: 0.4rem;
+		border: 1px solid #d2d2d7;
+		border-radius: 0.6rem;
+		background: #fff;
+		color: inherit;
+		text-decoration: none;
+		font-size: 0.9rem;
 	}
 	.job {
 		margin-top: 1rem;

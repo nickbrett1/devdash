@@ -16,6 +16,7 @@ with no terminal:
 
 import os
 
+from devopen import config as devopen_config
 from devopen import opener
 from devreap import config as reap_config
 from devreap import containers, vscode
@@ -155,14 +156,28 @@ def _open(repo_ref, workspaces_dir, on_log, fresh=None, clean=None):
         return opener.open_repo(
             repo_ref,
             workspaces_dir=workspaces_dir,
-            # Never ask: a server cannot answer a prompt. `False` means "do not
-            # register tailscale", which is devopen's own non-interactive path.
-            tailscale=False,
+            tailscale=_should_register_tailscale(),
             on_log=on_log,
             **opts,
         )
     except opener.DevopenError as e:
         raise ActionError(str(e)) from e
+
+
+def _should_register_tailscale():
+    """Whether `open` should also put the container on the tailnet.
+
+    devopen treats `None` as "ask", which a server cannot do, and `False` as
+    "never" — but never was wrong. Registering is not a side effect here, it is
+    most of the point: the reason to open a project from a phone is to reach it
+    from the phone, and the Blink link devdash shows is only real once the
+    container has a MagicDNS name.
+
+    `tailscale up` without an authkey prints a login URL that needs a browser,
+    which is no use from a server — so this is True only when devopen's config
+    has a key to do it non-interactively. No key means silence, not a hang.
+    """
+    return bool((devopen_config.load().get("tailscale_authkey") or "").strip())
 
 
 def _workspaces_dir(row):
