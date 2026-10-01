@@ -1,5 +1,6 @@
 <script>
 	import { onMount } from 'svelte';
+	import StatusStrip from '$lib/StatusStrip.svelte';
 
 	// The page is prerendered to a static asset and served by devdash's own
 	// Python server, so every number here comes from /api/* at runtime.
@@ -254,9 +255,6 @@
 		return `${d.toFixed(1)}d`;
 	}
 
-	const usedPct = $derived(
-		status && status.vm_mem_total ? Math.min(100, (status.vm_mem_used / status.vm_mem_total) * 100) : 0
-	);
 </script>
 
 <svelte:head>
@@ -289,39 +287,7 @@
 	{/if}
 
 	{#if status}
-		<section class="strip" aria-label="Memory">
-			<div class="meter">
-				<div class="meter-label">
-					<span>VM memory</span>
-					<span>{bytes(status.vm_mem_used)} / {bytes(status.vm_mem_total)}</span>
-				</div>
-				<div class="bar"><span style="width:{usedPct}%"></span></div>
-			</div>
-			<div class="figures">
-				<div class="figure">
-					<span class="n">{bytes(status.devcontainer_footprint)}</span>
-					<span class="k">devcontainers</span>
-				</div>
-				<div class="figure">
-					<span class="n">{status.running_count}</span>
-					<span class="k">running</span>
-				</div>
-				<div class="figure">
-					<span class="n">{status.container_count}</span>
-					<span class="k">devcontainers</span>
-				</div>
-				<div class="figure">
-					<span class="n">{screenLocked ? '?' : (windowTitles ?? '—')}</span>
-					{#if screenLocked}
-						<span class="k locked" title="The Mac's screen is locked. While it is, System Events reports zero windows for every app without an error, so the window count cannot be trusted.">
-							windows hidden — screen locked
-						</span>
-					{:else}
-						<span class="k" title={windowError || 'windows System Events can see'}>vscode windows</span>
-					{/if}
-				</div>
-			</div>
-		</section>
+		<div class="strip-slot"><StatusStrip {status} {windowTitles} {windowError} {screenLocked} /></div>
 	{/if}
 
 	{#if loading && projects.length === 0}
@@ -515,55 +481,6 @@
 	.muted {
 		color: #94a3b8;
 	}
-	.strip {
-		background: #161923;
-		border: 1px solid #3b4152;
-		border-radius: 0.75rem;
-		padding: 0.9rem 1rem;
-		margin-bottom: 1rem;
-	}
-	.meter-label {
-		display: flex;
-		justify-content: space-between;
-		font-size: 0.85rem;
-		color: #94a3b8;
-		margin-bottom: 0.35rem;
-	}
-	.bar {
-		height: 0.5rem;
-		background: #3b4152;
-		border-radius: 0.25rem;
-		overflow: hidden;
-	}
-	.bar span {
-		display: block;
-		height: 100%;
-		background: #34d399;
-	}
-	.figures {
-		display: grid;
-		grid-template-columns: repeat(4, 1fr);
-		gap: 0.5rem;
-		margin-top: 0.9rem;
-	}
-	.figure {
-		display: flex;
-		flex-direction: column;
-	}
-	.figure .n {
-		font-size: 1.05rem;
-		font-weight: 600;
-		font-variant-numeric: tabular-nums;
-	}
-	.figure .k {
-		font-size: 0.72rem;
-		color: #94a3b8;
-	}
-	/* Not an error — the page is fine — just a figure that cannot be read as
-	   fact right now. Amber sets it apart from the ordinary grey labels. */
-	.figure .k.locked {
-		color: #f0c14b;
-	}
 	.projects {
 		list-style: none;
 		margin: 0;
@@ -641,6 +558,9 @@
 	}
 	.badge.muted-badge {
 		color: #6b7280;
+	}
+	.strip-slot {
+		margin-bottom: 1rem;
 	}
 	.actions {
 		display: flex;

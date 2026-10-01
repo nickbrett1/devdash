@@ -394,22 +394,23 @@ There are no CLI shims here. `devdash` is a server, installed as a LaunchAgent
 
 `deploy/homepage-services.yaml` is the [Homepage](https://gethomepage.dev)
 entry for devdash, for the **Activity** group of the dashboard on the NAS. It
-is a service with an `href` (the click target) plus a `customapi` widget over
-`/api/status`, so the card carries the same summary as the top of the page —
-VM memory used, the devcontainer footprint, and the running/total container
-counts — and tapping it opens devdash itself.
+is a service with an `href` (the click target, the full page) plus an `iframe`
+widget pointing at `/tile.html`.
 
-Two clients want two different addresses, and the snippet uses both:
+`/tile.html` is a route that renders `StatusStrip` and nothing else, so the
+card carries exactly the same summary as the top of the page — the VM memory
+meter with used *and* total, the devcontainer footprint, and the running/total
+container counts — and cannot drift from it. A `customapi` widget was the first
+attempt: it is a fixed list of label/value pairs, so it had no room for the
+meter and could not show the total, only what is in use.
 
-- the **widget** is fetched server-side by the NAS, whose only nameserver is
-  the LAN router and which therefore cannot resolve `mac-studio`; it uses the
-  tailnet IP `100.77.144.14`;
-- the **`href`** is followed by the browser, so it has to be reachable from the
-  device looking at the dashboard. devdash binds to the tailnet IP only, so the
-  card opens from tailnet clients and fails from LAN-only ones.
+Both the iframe and the `href` are read by the **browser**, so both need a
+tailnet route from the device looking at the dashboard; devdash binds to the
+tailnet IP only, so the card opens from tailnet clients and fails from LAN-only
+ones. `siteMonitor` is the exception — fetched server-side by the NAS, which
+cannot resolve `mac-studio` (its only nameserver is the LAN router).
 
-That asymmetry mirrors the `Network Health` tile already there. Homepage
-hot-reloads `services.yaml`, so no container restart is needed. The block in
+Homepage hot-reloads `services.yaml`, so no container restart is needed. The block in
 `deploy/homepage-services.yaml` is indented to the NAS file's own style — group
 items at four spaces, their keys at eight — so it can be pasted in unchanged.
 
