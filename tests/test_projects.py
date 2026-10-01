@@ -112,9 +112,9 @@ def test_rows_joins_workspaces_containers_windows_and_builds(tmp_path, monkeypat
     now = dt.datetime(2026, 9, 10, tzinfo=UTC)
     rows, meta = projects.rows(now=now)
 
-    assert [r["name"] for r in rows] == ["acme", "example-one"]  # sorted
+    assert [r["name"] for r in rows] == ["example-one", "acme"]  # running first
 
-    a = rows[0]
+    a = rows[1]
     assert a["state"] == "absent"
     assert a["container"] is None
     assert a["live_session"] is False
@@ -123,7 +123,7 @@ def test_rows_joins_workspaces_containers_windows_and_builds(tmp_path, monkeypat
     assert a["last_build"] == "#7 (Nick Brett, main)"
     assert a["last_human_build_days"] == pytest.approx(2.0)
 
-    e = rows[1]
+    e = rows[0]
     assert e["state"] == "running"
     assert e["container"] == "example-one-dev"
     assert e["live_session"] is True
@@ -135,6 +135,35 @@ def test_rows_joins_workspaces_containers_windows_and_builds(tmp_path, monkeypat
     # The raw title count is separate from the matched set: it is the only
     # signal that distinguishes "no windows" from "cannot see windows".
     assert meta == {"window_error": None, "window_titles": 2}
+
+
+def test_rows_are_ordered_running_then_stopped_then_absent(tmp_path, monkeypatch):
+    """Running first, then stopped, then absent — and by name inside each
+    group, so a row only moves when its container does."""
+    for name in ("alpha", "bravo", "charlie", "mike", "yankee", "zulu"):
+        (tmp_path / name).mkdir()
+    monkeypatch.setattr(projects.reap_config, "load", _fake_reap_config(tmp_path))
+    monkeypatch.setattr(projects.containers, "list_devcontainers", lambda: [
+        {"id": "c1", "name": "zulu-dev", "workspace": str(tmp_path / "zulu"),
+         "running": True, "started_at": None},
+        {"id": "c2", "name": "mike-dev", "workspace": str(tmp_path / "mike"),
+         "running": True, "started_at": None},
+        {"id": "c3", "name": "alpha-dev", "workspace": str(tmp_path / "alpha"),
+         "running": False, "started_at": None},
+        {"id": "c4", "name": "bravo-dev", "workspace": str(tmp_path / "bravo"),
+         "running": False, "started_at": None},
+    ])
+    monkeypatch.setattr(projects.containers, "active_session", lambda cid: (False, ""))
+    monkeypatch.setattr(projects.vscode, "windows_for", lambda ws, process=None: (set(), None))
+    monkeypatch.setattr(projects.vscode, "list_window_titles", lambda process=None: ([], None))
+
+    rows, _ = projects.rows(probe_builds=False)
+
+    assert [(r["name"], r["state"]) for r in rows] == [
+        ("mike", "running"), ("zulu", "running"),
+        ("alpha", "stopped"), ("bravo", "stopped"),
+        ("charlie", "absent"), ("yankee", "absent"),
+    ]
 
 
 def test_rows_keeps_a_container_whose_workspace_is_gone(tmp_path, monkeypatch):

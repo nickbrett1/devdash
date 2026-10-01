@@ -223,7 +223,7 @@ Read-only, GET:
 | Route | Answer |
 | --- | --- |
 | `/healthz` | `{"status":"ok"}` |
-| `/api/projects` | the joined rows, plus `window_error` and `window_titles` |
+| `/api/projects` | the joined rows — running, then stopped, then absent, each by name — plus `window_error` and `window_titles` |
 | `/api/status` | VM memory and container counts |
 | `/api/repos` | repos with no workspace here yet, plus a listing error if any |
 | `/api/jobs/<id>` | one job's state and log |

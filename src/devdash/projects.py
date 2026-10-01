@@ -16,6 +16,11 @@ from contextlib import suppress
 from devreap import buildkite, containers, vscode
 from devreap import config as reap_config
 
+# Reading order for the list: what is up, then what is down but present, then
+# what is only a directory. A row's state is the thing the page exists to show,
+# so it decides the order.
+_STATE_RANK = {"running": 0, "stopped": 1, "absent": 2}
+
 # The last-human-build lookup is one HTTP call per project, and the UI
 # refreshes. Six projects on a 5-minute TTL is cheaper than the same six on
 # every poll, and a build older than the TTL is not news.
@@ -186,8 +191,14 @@ def _last_build(org, slug, token, now):
 
 
 def rows(now=None, probe_builds=True):
-    """One dict per project, sorted by name. Read-only: no container is
-    started, stopped or otherwise touched."""
+    """One dict per project: running first, then stopped, then absent, each
+    group by name. Read-only: no container is started, stopped or otherwise
+    touched.
+
+    The order is the answer to the only question the page is opened to ask —
+    what is up, and what is not — so it is decided here rather than left to
+    each reader to sort for itself.
+    """
     cfg = reap_config.load()
     now = now or dt.datetime.now(dt.UTC)
     token = cfg.get("buildkite_token") or os.environ.get("BUILDKITE_API_TOKEN") or ""
@@ -241,6 +252,10 @@ def rows(now=None, probe_builds=True):
             "last_human_build_days": days,
             "last_build": label,
         })
+    # Running, then stopped, then absent — the order the phone wants them in —
+    # and by name inside each group, so a row only moves when its container
+    # does.
+    out.sort(key=lambda r: (_STATE_RANK[r["state"]], r["name"]))
     return out, {"window_error": window_error, "window_titles": len(titles)}
 
 
