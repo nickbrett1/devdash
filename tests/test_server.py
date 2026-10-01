@@ -8,12 +8,22 @@ and what does not.
 import http.client
 import json
 import threading
+import time
 
 import pytest
 
-from devdash import actions, projects, server
+from devdash import actions, jobs, projects, repos, server
 
 TOKEN = "s3cret-token"
+
+
+@pytest.fixture(autouse=True)
+def empty_job_registry():
+    """The job registry is module-level state; a leak between tests would make
+    a 409 appear out of nowhere."""
+    jobs.clear()
+    yield
+    jobs.clear()
 
 
 @pytest.fixture
@@ -191,16 +201,118 @@ def test_a_refusal_is_a_200_the_ui_can_render(live, monkeypatch):
     assert payload["refused"] is True and "tmux" in payload["detail"]
 
 
-def test_open_passes_fresh_and_clean_only_when_asked(live, monkeypatch):
-    seen = {}
+def test_open_starts_a_job_instead_of_blocking(live, monkeypatch):
+    """A first `devcontainer up` takes minutes and a phone's request will not
+    wait that long, so open answers 202 with an id to poll."""
     monkeypatch.setattr(actions, "open_project",
-                        lambda name, fresh=None, clean=None:
-                        seen.update(fresh=fresh, clean=clean) or {"name": name, "uri": "uri"})
+                        lambda name, **kw: {"name": name, "uri": "vscode-remote://x"})
     auth = {"Authorization": f"Bearer {TOKEN}"}
-    post(live, "/api/projects/acme/open", None, auth)
-    assert seen == {"fresh": None, "clean": None}
-    post(live, "/api/projects/acme/open", {"fresh": True}, auth)
-    assert seen == {"fresh": True, "clean": None}
+    status, _, body = post(live, "/api/projects/acme/open", None, auth)
+    assert status == 202
+    snapshot = json.loads(body)
+    assert snapshot["job_id"] and snapshot["target"] == "acme"
+
+    done = wait_for_job(live, snapshot["job_id"], auth)
+    assert done["state"] == "done"
+    assert done["result"]["uri"] == "vscode-remote://x"
+
+
+def wait_for_job(port, job_id, headers, timeout=5.0):
+    """Poll a job to completion. The job runs on a thread, so the first poll can
+    legitimately still say 'running'."""
+    deadline = time.time() + timeout
+    while True:
+        status, _, body = get(port, f"/api/jobs/{job_id}", headers)
+        assert status == 200
+        snapshot = json.loads(body)
+        if snapshot["state"] != "running" or time.time() > deadline:
+            return snapshot
+        time.sleep(0.02)
+
+
+def test_open_passes_fresh_and_clean_only_when_asked(live, monkeypatch):
+    seen = []
+    monkeypatch.setattr(actions, "open_project",
+                        lambda name, fresh=None, clean=None, on_log=None:
+                        seen.append((fresh, clean)) or {"name": name, "uri": "uri"})
+    auth = {"Authorization": f"Bearer {TOKEN}"}
+    wait_for_job(live, json.loads(post(live, "/api/projects/acme/open", None, auth)[2])["job_id"], auth)
+    wait_for_job(live, json.loads(post(live, "/api/projects/acme/open", {"fresh": True}, auth)[2])["job_id"], auth)
+    assert seen == [(None, None), (True, None)]
+
+
+def test_a_second_open_for_the_same_target_is_409(live, monkeypatch):
+    """Not queued: a second `devcontainer up` on the same workspace would fight
+    the first for the same container name."""
+    release = threading.Event()
+    monkeypatch.setattr(actions, "open_project",
+                        lambda name, **kw: (release.wait(5), {"name": name})[1])
+    auth = {"Authorization": f"Bearer {TOKEN}"}
+    first = json.loads(post(live, "/api/projects/acme/open", None, auth)[2])
+    status, _, body = post(live, "/api/projects/acme/open", None, auth)
+    assert status == 409
+    assert json.loads(body)["job_id"] == first["job_id"]
+    release.set()
+
+
+def test_the_job_log_streams_to_the_poller(live, monkeypatch):
+    def open_it(name, on_log=None, **kw):
+        on_log("Cloning acme")
+        on_log("Container ready")
+        return {"name": name}
+
+    monkeypatch.setattr(actions, "open_project", open_it)
+    auth = {"Authorization": f"Bearer {TOKEN}"}
+    job_id = json.loads(post(live, "/api/projects/acme/open", None, auth)[2])["job_id"]
+    assert wait_for_job(live, job_id, auth)["log"] == ["Cloning acme", "Container ready"]
+
+
+def test_a_job_that_raises_fails_instead_of_hanging(live, monkeypatch):
+    def boom(name, **kw):
+        raise actions.ActionError("command failed: git clone")
+
+    monkeypatch.setattr(actions, "open_project", boom)
+    auth = {"Authorization": f"Bearer {TOKEN}"}
+    job_id = json.loads(post(live, "/api/projects/acme/open", None, auth)[2])["job_id"]
+    done = wait_for_job(live, job_id, auth)
+    assert done["state"] == "failed"
+    assert "git clone" in done["error"]
+
+
+def test_an_unknown_job_is_404(live):
+    status, _, _ = get(live, "/api/jobs/nope", {"Authorization": f"Bearer {TOKEN}"})
+    assert status == 404
+
+
+def test_provision_requires_a_repository(live):
+    status, _, body = post(live, "/api/provision", {}, {"Authorization": f"Bearer {TOKEN}"})
+    assert status == 400
+    assert "repository" in json.loads(body)["error"]
+
+
+def test_provision_starts_a_job_for_the_repo(live, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(actions, "provision",
+                        lambda repo, on_log=None, **kw: seen.update(repo=repo) or {"name": "acme"})
+    auth = {"Authorization": f"Bearer {TOKEN}"}
+    status, _, body = post(live, "/api/provision", {"repo": "nickbrett1/acme"}, auth)
+    assert status == 202
+    done = wait_for_job(live, json.loads(body)["job_id"], auth)
+    assert done["target"] == "nickbrett1/acme"
+    assert seen == {"repo": "nickbrett1/acme"}
+
+
+def test_repos_lists_what_has_no_workspace_yet(live, monkeypatch):
+    monkeypatch.setattr(repos, "workspaces_dir", lambda: "/w")
+    monkeypatch.setattr(repos, "unprovisioned",
+                        lambda ws, **kw: (["nickbrett1/greenfield"], "listing is stale"))
+    status, _, body = get(live, "/api/repos", {"Authorization": f"Bearer {TOKEN}"})
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["repos"] == ["nickbrett1/greenfield"]
+    # A listing failure is a message beside the answer, not a 500 — the picker
+    # still has something to show.
+    assert payload["error"] == "listing is stale"
 
 
 def test_an_action_error_is_a_400(live, monkeypatch):

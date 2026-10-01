@@ -137,6 +137,120 @@ function stubAction(row = project(), postBody = {}, postStatus = 200) {
   return calls;
 }
 
+describe("the jobs a phone starts", () => {
+  const AUTH = { Authorization: "Bearer x" };
+
+  /** A fetch stub keyed by method+path, so a job can be polled to completion. */
+  function stubRoutes(routes) {
+    const calls = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url, init = {}) => {
+        const key = `${init.method || "GET"} ${String(url)}`;
+        calls.push({ key, body: init.body ? JSON.parse(init.body) : undefined });
+        const route = routes.find((r) => key.startsWith(r.key));
+        if (!route) throw new Error(`unstubbed request: ${key}`);
+        return jsonResponse(
+          typeof route.body === "function" ? route.body(calls.length) : route.body,
+          route.status || 200,
+        );
+      }),
+    );
+    return calls;
+  }
+
+  it("starts an open as a job and streams the log from the poll", async () => {
+    vi.useFakeTimers();
+    try {
+      const calls = stubRoutes([
+        {
+          key: "GET /api/projects",
+          body: { projects: [project({ state: "absent", container: null })], window_titles: 0 },
+        },
+        { key: "GET /api/status", body: STATUS },
+        {
+          key: "POST /api/projects/acme/open",
+          status: 202,
+          body: { job_id: "j1", kind: "open", target: "acme", state: "running", log: [] },
+        },
+        {
+          key: "GET /api/jobs/j1",
+          body: {
+            job_id: "j1",
+            kind: "open",
+            target: "acme",
+            state: "done",
+            log: ["Cloning acme", "Container ready"],
+            result: { uri: "vscode-remote://x" },
+          },
+        },
+      ]);
+      render(Page);
+      await fireEvent.click(await screen.findByRole("button", { name: "Open" }));
+      expect(
+        calls.some((c) => c.key === "POST /api/projects/acme/open" && JSON.stringify(c.body) === "{}"),
+      ).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(1100);
+      expect(screen.getByText(/Container ready/)).toBeInTheDocument();
+      expect(screen.getByText("done")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("says so when the server refuses a second job for the same target", async () => {
+    stubRoutes([
+      {
+        key: "GET /api/projects",
+        body: { projects: [project({ state: "absent", container: null })], window_titles: 0 },
+      },
+      { key: "GET /api/status", body: STATUS },
+      {
+        key: "POST /api/projects/acme/open",
+        status: 409,
+        body: { error: "open already running for acme", job_id: "j1" },
+      },
+    ]);
+    render(Page);
+    await fireEvent.click(await screen.findByRole("button", { name: "Open" }));
+    expect(await screen.findByText("open already running for acme")).toBeInTheDocument();
+  });
+
+  it("lists repos with no workspace and provisions one", async () => {
+    const calls = stubRoutes([
+      { key: "GET /api/projects", body: { projects: [], window_titles: 0 } },
+      { key: "GET /api/status", body: STATUS },
+      { key: "GET /api/repos", body: { repos: ["nickbrett1/greenfield"], error: null } },
+      {
+        key: "POST /api/provision",
+        status: 202,
+        body: { job_id: "j2", kind: "provision", target: "nickbrett1/greenfield", state: "running" },
+      },
+    ]);
+    render(Page);
+    await fireEvent.click(await screen.findByRole("button", { name: /Provision a repo/ }));
+    await fireEvent.click(await screen.findByRole("button", { name: "Provision" }));
+    const post = calls.find((c) => c.key === "POST /api/provision");
+    expect(post.body).toEqual({ repo: "nickbrett1/greenfield" });
+    expect(await screen.findByText(/nickbrett1\/greenfield/)).toBeInTheDocument();
+  });
+
+  it("shows a listing error beside the picker rather than hiding it", async () => {
+    stubRoutes([
+      { key: "GET /api/projects", body: { projects: [], window_titles: 0 } },
+      { key: "GET /api/status", body: STATUS },
+      {
+        key: "GET /api/repos",
+        body: { repos: [], error: "no repositories returned (no GitHub token?)" },
+      },
+    ]);
+    render(Page);
+    await fireEvent.click(await screen.findByRole("button", { name: /Provision a repo/ }));
+    expect(await screen.findByText(/no GitHub token/)).toBeInTheDocument();
+  });
+});
+
 describe("open and close", () => {
   it("offers Close and Open for a project that exists", async () => {
     stubAction();

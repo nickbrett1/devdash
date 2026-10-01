@@ -179,6 +179,47 @@ def test_open_turns_a_devopen_failure_into_an_action_error(rows, monkeypatch):
     assert "git clone" in str(excinfo.value)
 
 
+# -- provision ---------------------------------------------------------------
+
+
+def test_provision_expands_a_repo_and_reports_the_project_name(rows, monkeypatch):
+    """`owner/name` becomes a URL, and the workspace directory devopen will
+    create is the repo's basename — that is the name the project list will
+    show once this finishes, so it is the name worth returning."""
+    seen = {}
+    monkeypatch.setattr(actions.opener, "open_repo",
+                        lambda repo_url, **kw: seen.update(repo_url=repo_url, **kw) or "uri")
+    out = actions.provision("nickbrett1/acme", on_log=lambda line: None)
+    assert seen["repo_url"] == "https://github.com/nickbrett1/acme.git"
+    assert seen["workspaces_dir"] == "/w"
+    assert out == {"name": "acme", "repo": "https://github.com/nickbrett1/acme.git", "uri": "uri"}
+
+
+def test_provision_passes_a_url_through_unchanged(rows, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(actions.opener, "open_repo",
+                        lambda repo_url, **kw: seen.update(repo_url=repo_url) or "uri")
+    actions.provision("git@github.com:nickbrett1/acme.git", on_log=lambda line: None)
+    assert seen["repo_url"] == "git@github.com:nickbrett1/acme.git"
+
+
+def test_provision_streams_to_the_given_log(rows, monkeypatch):
+    def fake_open(repo_url, on_log, **kw):
+        on_log("Cloning…")
+        return "uri"
+
+    monkeypatch.setattr(actions.opener, "open_repo", fake_open)
+    lines = []
+    actions.provision("acme", on_log=lines.append)
+    assert lines == ["Cloning…"]
+
+
+def test_provision_without_a_repository_is_an_action_error(rows):
+    for empty in ("", "   ", None):
+        with pytest.raises(actions.ActionError):
+            actions.provision(empty, on_log=lambda line: None)
+
+
 # -- name resolution --------------------------------------------------------
 
 

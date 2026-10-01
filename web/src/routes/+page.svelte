@@ -5,6 +5,8 @@
 	// Python server, so every number here comes from /api/* at runtime and
 	// the cookie the server set on the first ?token= visit authenticates it.
 	const REFRESH_MS = 30_000;
+	const JOB_POLL_MS = 1000;
+	const AUTH = 'Not authorised. Open this page once with ?token=… and the browser will keep a cookie.';
 
 	let projects = $state([]);
 	let status = $state(null);
@@ -20,6 +22,18 @@
 	let busy = $state({});
 	let note = $state({});
 	let offer = $state({});
+	// The one long-running job this phone started. `open` and `provision` both
+	// take minutes on a first build, so they answer with a job id and the log
+	// is polled from there.
+	let job = $state(null);
+	let pollTimer = null;
+
+	// The Provision picker. `repos === null` means "not asked yet", which is
+	// deliberately distinct from "asked and got nothing".
+	let repos = $state(null);
+	let reposError = $state('');
+	let repoFilter = $state('');
+	let pickerOpen = $state(false);
 
 	async function load() {
 		try {
@@ -28,7 +42,7 @@
 				fetch('/api/status', { credentials: 'same-origin' })
 			]);
 			if (p.status === 401 || s.status === 401) {
-				error = 'Not authorised. Open this page once with ?token=… and the browser will keep a cookie.';
+				error = AUTH;
 				return;
 			}
 			if (!p.ok || !s.ok) {
@@ -52,8 +66,87 @@
 	onMount(() => {
 		load();
 		const timer = setInterval(load, REFRESH_MS);
-		return () => clearInterval(timer);
+		return () => {
+			clearInterval(timer);
+			stopPolling();
+		};
 	});
+
+	async function startJob(url, body, target) {
+		stopPolling();
+		try {
+			const res = await fetch(url, {
+				method: 'POST',
+				credentials: 'same-origin',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(body || {})
+			});
+			const data = await res.json().catch(() => ({}));
+			if (res.status === 401) {
+				error = AUTH;
+				return;
+			}
+			if (!res.ok) {
+				// 409 is the ordinary "already running" answer and carries the
+				// job id of the job in the way; either way the message is the
+				// server's to write.
+				job = { state: 'failed', target, error: data.error || `HTTP ${res.status}`, log: [] };
+				return;
+			}
+			job = data;
+			pollJob();
+		} catch (e) {
+			job = { state: 'failed', target, error: `Could not reach devdash: ${e}`, log: [] };
+		}
+	}
+
+	function pollJob() {
+		pollTimer = setInterval(async () => {
+			try {
+				const res = await fetch(`/api/jobs/${job.job_id}`, { credentials: 'same-origin' });
+				if (!res.ok) return;
+				job = await res.json();
+			} catch {
+				return; // a dropped poll is not a failed job; the next one may land
+			}
+			if (job.state !== 'running') {
+				stopPolling();
+				load();
+			}
+		}, JOB_POLL_MS);
+	}
+
+	function stopPolling() {
+		if (pollTimer) clearInterval(pollTimer);
+		pollTimer = null;
+	}
+
+	async function loadRepos() {
+		pickerOpen = !pickerOpen;
+		if (!pickerOpen || repos !== null) return;
+		try {
+			const res = await fetch('/api/repos', { credentials: 'same-origin' });
+			const data = await res.json().catch(() => ({}));
+			repos = data.repos || [];
+			reposError = data.error || '';
+		} catch (e) {
+			repos = [];
+			reposError = `Could not reach devdash: ${e}`;
+		}
+	}
+
+	// "This phone already asked for this and it has not finished" — the button
+	// that started the job is the one that must show it. The server refuses a
+	// duplicate anyway; this is so nobody has to find that out.
+	function isRunning(target) {
+		return !!job && job.state === 'running' && job.target === target;
+	}
+
+	const filteredRepos = $derived(
+		repos === null
+			? []
+			: repos.filter((r) => r.toLowerCase().includes(repoFilter.trim().toLowerCase()))
+	);
 
 	async function act(name, verb, extra = {}) {
 		busy = { ...busy, [name]: verb };
@@ -68,7 +161,7 @@
 			});
 			const body = await res.json().catch(() => ({}));
 			if (res.status === 401) {
-				error = 'Not authorised. Open this page once with ?token=… and the browser will keep a cookie.';
+				error = AUTH;
 				return;
 			}
 			if (!res.ok) {
@@ -205,10 +298,10 @@
 						{#if p.state === 'absent'}
 							<button
 								class="wide"
-								disabled={!!busy[p.name]}
-								onclick={() => act(p.name, 'open')}
+								disabled={isRunning(p.name)}
+								onclick={() => startJob(`/api/projects/${encodeURIComponent(p.name)}/open`, {}, p.name)}
 							>
-								{busy[p.name] === 'open' ? 'Opening…' : 'Open'}
+								{isRunning(p.name) ? 'Opening…' : 'Open'}
 							</button>
 						{:else}
 							<button
@@ -219,11 +312,11 @@
 								{busy[p.name] === 'close' ? 'Closing…' : 'Close'}
 							</button>
 							<button
-								disabled={!!busy[p.name]}
+								disabled={isRunning(p.name)}
 								title="reopen / rebuild and open a window"
-								onclick={() => act(p.name, 'open')}
+								onclick={() => startJob(`/api/projects/${encodeURIComponent(p.name)}/open`, {}, p.name)}
 							>
-								{busy[p.name] === 'open' ? 'Opening…' : 'Open'}
+								{isRunning(p.name) ? 'Opening…' : 'Open'}
 							</button>
 						{/if}
 						{#if offer[p.name]}
@@ -239,6 +332,62 @@
 			{/each}
 		</ul>
 	{/if}
+
+	{#if job}
+		<section class="job" class:bad={job.state === 'failed'}>
+			<div class="job-head">
+				<strong>{job.kind || 'job'} {job.target}</strong>
+				<span class="state" class:running={job.state === 'done'} class:stopped={job.state === 'running'}>
+					{job.state}
+				</span>
+			</div>
+			{#if job.error}
+				<p class="note bad">{job.error}</p>
+			{/if}
+			{#if job.state === 'running'}
+				<p class="note">Running — a first container build takes minutes. The log updates once a second.</p>
+			{/if}
+			{#if job.log && job.log.length}
+				<pre>{job.log.join('\n')}</pre>
+			{/if}
+			{#if job.state !== 'running'}
+				<button onclick={() => (job = null)}>Dismiss</button>
+			{/if}
+		</section>
+	{/if}
+
+	<section class="provision">
+		<button class="disclose" aria-expanded={pickerOpen} onclick={loadRepos}>
+			{pickerOpen ? '▾' : '▸'} Provision a repo
+		</button>
+		{#if pickerOpen}
+			{#if reposError}
+				<p class="note bad">{reposError}</p>
+			{/if}
+			{#if repos === null}
+				<p class="muted">Loading repositories…</p>
+			{:else}
+				<input type="search" bind:value={repoFilter} placeholder="Filter repositories…" />
+				{#if filteredRepos.length === 0}
+					<p class="muted">Nothing here that has no workspace yet.</p>
+				{:else}
+					<ul class="repos">
+						{#each filteredRepos as r (r)}
+							<li>
+								<span class="repo-name">{r}</span>
+								<button
+									disabled={isRunning(r)}
+									onclick={() => startJob('/api/provision', { repo: r }, r)}
+								>
+									{isRunning(r) ? 'Cloning…' : 'Provision'}
+								</button>
+							</li>
+						{/each}
+					</ul>
+				{/if}
+			{/if}
+		{/if}
+	</section>
 </main>
 
 <style>
@@ -438,5 +587,85 @@
 	}
 	.note.bad {
 		color: #a1221b;
+	}
+	.job {
+		margin-top: 1rem;
+		background: #fff;
+		border: 1px solid #e5e5ea;
+		border-radius: 0.75rem;
+		padding: 0.9rem 1rem;
+	}
+	.job.bad {
+		border-color: #ffc9c4;
+		background: #fff1f0;
+	}
+	.job-head {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 0.5rem;
+	}
+	.job pre {
+		margin: 0.6rem 0 0;
+		padding: 0.6rem;
+		max-height: 18rem;
+		overflow: auto;
+		background: #1d1d1f;
+		color: #f2f2f7;
+		border-radius: 0.5rem;
+		font-size: 0.75rem;
+		line-height: 1.35;
+		white-space: pre-wrap;
+		word-break: break-word;
+	}
+	.provision {
+		margin-top: 1rem;
+	}
+	.disclose {
+		width: 100%;
+		text-align: left;
+		font-size: 0.95rem;
+		padding: 0 0.9rem;
+	}
+	input[type='search'] {
+		width: 100%;
+		box-sizing: border-box;
+		margin-top: 0.6rem;
+		padding: 0.6rem 0.7rem;
+		min-height: 2.75rem;
+		font-size: 1rem;
+		border: 1px solid #d2d2d7;
+		border-radius: 0.6rem;
+		background: #fff;
+		color: inherit;
+	}
+	.repos {
+		list-style: none;
+		margin: 0.6rem 0 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+	}
+	.repos li {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.6rem;
+		background: #fff;
+		border: 1px solid #e5e5ea;
+		border-radius: 0.6rem;
+		padding: 0.5rem 0.6rem;
+	}
+	.repo-name {
+		font-size: 0.9rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.repos button {
+		min-width: 5.5rem;
+		min-height: 2.75rem;
+		font-size: 0.9rem;
 	}
 </style>

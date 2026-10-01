@@ -18,7 +18,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import actions, projects
+from . import actions, jobs, projects, repos
 
 COOKIE = "devdash_token"
 HEALTH_BODY = b'{"status": "ok"}'
@@ -130,6 +130,20 @@ class Handler(SimpleHTTPRequestHandler):
             if path == "/api/status":
                 self._send_json(projects.status())
                 return
+            if path == "/api/repos":
+                available, listing_error = repos.unprovisioned(repos.workspaces_dir())
+                self._send_json({"repos": available, "error": listing_error})
+                return
+            if path.startswith("/api/jobs/"):
+                job = jobs.get(path.rsplit("/", 1)[-1])
+                if job is None:
+                    self._send_json({"error": "no such job"}, status=404)
+                else:
+                    self._send_json(job)
+                return
+            if path == "/api/jobs":
+                self._send_json({"jobs": jobs.running()})
+                return
         except Exception as e:  # noqa: BLE001 — a broken join must not look like a dead server
             self._send_json({"error": f"{type(e).__name__}: {e}"}, status=500)
             return
@@ -147,32 +161,61 @@ class Handler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
         parts = [unquote(p) for p in path.split("/") if p]
-        # /api/projects/<name>/{open,close}
-        if len(parts) != 4 or parts[:2] != ["api", "projects"] or parts[3] not in ("open", "close"):
-            self._send_json({"error": "not found"}, status=404)
-            return
-
-        name, verb = parts[2], parts[3]
         body = self._json_body()
         query = parse_qs(parsed.query)
+
         try:
-            if verb == "close":
-                result = actions.close_project(name, force=_flag("force", body, query))
-            else:
-                result = actions.open_project(
-                    name,
-                    fresh=_flag("fresh", body, query, default=None),
-                    clean=_flag("clean", body, query, default=None),
-                )
+            # /api/projects/<name>/close — fast (a docker stop and an osascript),
+            # so it answers with the outcome rather than a job id.
+            if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "close":
+                result = actions.close_project(parts[2], force=_flag("force", body, query))
+                self._send_json(result)
+                return
+
+            # /api/projects/<name>/open and /api/provision — potentially minutes
+            # of `devcontainer up`, so these answer 202 with a job id and the
+            # caller polls /api/jobs/<id> for the log.
+            if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "open":
+                self._start("open", parts[2], body, query,
+                            lambda on_log, **kw: actions.open_project(parts[2], on_log=on_log, **kw))
+                return
+
+            if parts == ["api", "provision"]:
+                repo = str(body.get("repo") or query.get("repo", [""])[0]).strip()
+                if not repo:
+                    self._send_json({"error": "a repository is required"}, status=400)
+                    return
+                self._start("provision", repo, body, query,
+                            lambda on_log, **kw: actions.provision(repo, on_log=on_log, **kw))
+                return
         except actions.ActionError as e:
-            self._send_json({"error": str(e), "name": name}, status=400)
+            self._send_json({"error": str(e)}, status=400)
             return
         except Exception as e:  # noqa: BLE001 — a crashed action is a 500, not a dead server
-            self._send_json({"error": f"{type(e).__name__}: {e}", "name": name}, status=500)
+            self._send_json({"error": f"{type(e).__name__}: {e}"}, status=500)
             return
-        # A refusal is a successful request that declined to act, so it is a
-        # 200 the UI can render — not an error it has to interpret.
-        self._send_json(result)
+
+        self._send_json({"error": "not found"}, status=404)
+
+    def _start(self, kind, target, body, query, fn):
+        """Begin a job unless one for the same target is already running.
+
+        Refusing rather than queueing is the honest answer: `devcontainer up`
+        on a workspace that is already building would fight the first one for
+        the same container name, and the phone would rather hear "already
+        running" than wait behind a build it did not start.
+        """
+        for existing in jobs.running(kind=kind, target=target):
+            self._send_json({"error": f"{kind} already running for {target}",
+                             "job_id": existing["job_id"], "state": existing["state"]},
+                            status=409)
+            return
+        snapshot = jobs.start(kind, target, lambda on_log: fn(
+            on_log=on_log,
+            fresh=_flag("fresh", body, query, default=None),
+            clean=_flag("clean", body, query, default=None),
+        ))
+        self._send_json(snapshot, status=202)
 
     def _json_body(self):
         """The request body as a dict. An unparseable body is {} — every field

@@ -170,6 +170,9 @@ Read-only, GET, behind the token:
 | `/healthz` | `{"status":"ok"}` — the one route with no token |
 | `/api/projects` | the joined rows, plus `window_error` and `window_titles` |
 | `/api/status` | VM memory and container counts |
+| `/api/repos` | repos with no workspace here yet, plus a listing error if any |
+| `/api/jobs/<id>` | one job's state and log |
+| `/api/jobs` | the jobs still running |
 
 Mutating, POST only — a prefetcher or a back button must not be able to stop a
 container, so no action is reachable by GET:
@@ -193,10 +196,51 @@ expensive mistake by default: if someone is sitting in the container
 reported independently (`stopped`, `window_closed`) since a "save your changes?"
 sheet can keep the window open while the RAM is reclaimed either way.
 
-`open` hands off to `devopen.open_repo` and returns the `vscode-remote://` URI.
-It passes `tailscale=False` unconditionally and leaves `fresh`/`clean` off
-unless the body asks for them: every one of devopen's prompts is a question a
-server cannot answer, so it is a parameter with a safe default instead.
+`close` also means "stop", never "remove": `docker stop` keeps the container
+and its volumes, so `Open` brings the same container straight back.
+
+### Jobs
+
+`open` and `provision` run `devcontainer up`, which takes minutes on a first
+build — longer than a phone's HTTP request, or the browser that made it, will
+wait. So they do not answer with an outcome:
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+     -d '{"repo":"nickbrett1/acme"}' "http://<tailnet-ip>:3990/api/provision"
+# 202 {"job_id":"42c6b745c9a7","kind":"provision","target":"nickbrett1/acme",
+#      "state":"running","log":[], ...}
+
+curl -H "Authorization: Bearer $TOKEN" "http://<tailnet-ip>:3990/api/jobs/42c6b745c9a7"
+# {"state":"failed","error":"ActionError: command failed (128): git clone …",
+#  "log":["Cloning …","remote: Repository not found.", …], "running_for":0.5}
+```
+
+`state` is `running`, `done` or `failed`; `log` is the tail of devopen's own
+output, which is the only thing that can explain a slow or failed build. A
+second request for the same target is **`409`, not a queue** — a second
+`devcontainer up` on a workspace already building would fight the first for the
+same container name, and a phone would rather hear "already running" than wait
+behind a build it did not start.
+
+Jobs are not durable, deliberately. A restart loses them; `devcontainer up` is
+the part you would have to redo anyway, so there is nothing to resume.
+
+### Provision
+
+`GET /api/repos` is the GitHub repos the configured account can see that have
+**no workspace directory here yet**, so the picker never offers to provision
+something already in the project list. The listing is a keychain lookup plus up
+to three HTTPS calls through `curl`, cached for five minutes, and a listing
+failure comes back as a message beside the answer rather than a 500 — the
+picker still has something to show.
+
+`open` hands off to `devopen.open_repo` (as does `provision`, whose only
+difference is that it takes a *repository* rather than a project, because the
+project does not exist yet). It passes `tailscale=False` unconditionally and
+leaves `fresh`/`clean` off unless the body asks for them: every one of
+devopen's prompts is a question a server cannot answer, so it is a parameter
+with a safe default instead.
 
 There are no CLI shims here. `devdash` is a server, installed as a LaunchAgent
 (`install.py`), so there is nothing for a `pip install` to shadow.

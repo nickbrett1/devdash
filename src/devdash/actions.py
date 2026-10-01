@@ -104,7 +104,7 @@ def close_project(name, force=False):
             "container": container, "detail": detail}
 
 
-def open_project(name, fresh=None, clean=None):
+def open_project(name, fresh=None, clean=None, on_log=None):
     """Clone if needed, `devcontainer up`, and open the window.
 
     devopen's open_repo already does all of this — including cloning when the
@@ -112,17 +112,49 @@ def open_project(name, fresh=None, clean=None):
     of pointing at a repo that has no workspace directory yet.
     """
     row = _row(name)
+    # `on_log` is how a job streams this to a phone; without one the tail of
+    # the output rides along in the response instead, which is what a direct
+    # call (and every test) wants.
+    lines, collect = _log_collector()
+    uri = _open(row["name"], _workspaces_dir(row), on_log or collect,
+                fresh=fresh, clean=clean)
+    return {"name": name, "uri": uri, "log": lines}
+
+
+def provision(repo, on_log, fresh=None, clean=None):
+    """Clone, build and open a repo that has no workspace here yet.
+
+    The only real difference from `open_project` is the *input*: a repository
+    (`owner/name` or a URL) rather than a project name, because the project
+    does not exist yet — that is the whole point. `open_repo` clones when the
+    directory is missing, so the flow is genuinely the same code path.
+    """
+    repo = (repo or "").strip()
+    if not repo:
+        raise ActionError("a repository is required")
+
+    expanded = opener.normalize_repo(repo)
+    if not expanded:
+        raise ActionError(f"could not read '{repo}' as a repository")
+    name = opener.repo_dir_name(expanded)
+
+    cfg = reap_config.load()
+    workspaces = cfg.get("workspaces_dir")
+    uri = _open(expanded, workspaces, on_log, fresh=fresh, clean=clean)
+    return {"name": name, "repo": expanded, "uri": uri}
+
+
+def _open(repo_ref, workspaces_dir, on_log, fresh=None, clean=None):
+    """The one call into devopen, shared by open and provision."""
     opts = dict(SAFE)
     if fresh is not None:
         opts["fresh"] = bool(fresh)
     if clean is not None:
         opts["clean"] = bool(clean)
-
-    lines, on_log = _log_collector()
     try:
-        uri = opener.open_repo(
-            row["name"],
-            workspaces_dir=_workspaces_dir(row),
+        return opener.open_repo(
+            repo_ref,
+            workspaces_dir=workspaces_dir,
             # Never ask: a server cannot answer a prompt. `False` means "do not
             # register tailscale", which is devopen's own non-interactive path.
             tailscale=False,
@@ -131,7 +163,6 @@ def open_project(name, fresh=None, clean=None):
         )
     except opener.DevopenError as e:
         raise ActionError(str(e)) from e
-    return {"name": name, "uri": uri, "log": lines}
 
 
 def _workspaces_dir(row):
