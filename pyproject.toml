@@ -10,7 +10,7 @@ dependencies = [
     # when a new tag is cut. For local development against the checkouts in
     # ~/DevOpen, overlay editable installs — see README "Dependencies".
     "devopen @ git+https://github.com/nickbrett1/devopen@v0.1.0",
-    "devreap @ git+https://github.com/nickbrett1/devreap@v0.1.0",
+    "devreap @ git+https://github.com/nickbrett1/devreap@v0.1.1",
 ]
 
 [project.optional-dependencies]
