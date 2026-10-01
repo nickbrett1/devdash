@@ -1,0 +1,41 @@
+# Homepage services.yaml snippet for devdash.
+#
+# Append the entry below to the "Activity" group of your Homepage
+# `services.yaml` (/volumeUSB1/usbshare/docker/homepage/config on the NAS).
+# Homepage hot-reloads services.yaml, so no restart is needed.
+#
+# Two different clients matter here, and they need different addresses:
+#
+#   * the WIDGET is fetched server-side, from the NAS. The NAS has no MagicDNS
+#     name for the Mac (its only nameserver is the LAN router), so the widget
+#     URL uses the tailnet IP of the Mac Studio and not `mac-studio`;
+#   * `href` is followed by the BROWSER, so it has to be reachable from
+#     whatever device is looking at the dashboard. devdash binds to the
+#     tailnet IP only, so the card works from tailnet clients and fails from
+#     LAN-only ones — the same trade netwatch-dash made.
+#
+# `format: bytes` on the two byte fields is what turns 5852805201.92 into
+# "5.5 GB" rather than a nine-digit number.
+
+- devdash:
+    icon: mdi-microsoft-visual-studio-code
+    href: http://100.77.144.14:3990/
+    description: devcontainers on mac-studio — what is running, and what it costs
+    siteMonitor: http://100.77.144.14:3990/healthz
+    widget:
+      type: customapi
+      url: http://100.77.144.14:3990/api/status
+      refreshInterval: 15000
+      mappings:
+        - field: vm_mem_used
+          label: VM Used
+          format: bytes
+        - field: devcontainer_footprint
+          label: Devcontainers
+          format: bytes
+        - field: running_count
+          label: Running
+          format: number
+        - field: container_count
+          label: Total
+          format: number
