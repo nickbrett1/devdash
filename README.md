@@ -256,6 +256,23 @@ sheet can keep the window open while the RAM is reclaimed either way.
 `close` also means "stop", never "remove": `docker stop` keeps the container
 and its volumes, so `Open` brings the same container straight back.
 
+### Why `Open` is hidden on a running container that already has a window
+
+`running` and `window_open` are different facts, and the UI keeps them apart: a
+container can be up with nothing attached (the Dev Containers extension stops a
+container when its window closes, but a container started by a terminal, or one
+whose stop failed while its window closed, will not), and that container is
+exactly the one worth reopening. So `Open` exists to attach a window, not to
+start a project — it reuses a running container rather than rebuilding it
+(`--fresh` is what rebuilds, and devdash never passes it unless asked).
+
+But when the container is running *and* devdash can see its window, `Open`
+would only re-focus something the user is already looking at, so the row offers
+`Close` alone. It comes back for a stopped container that still has a stale
+window, where reopening is the point. While the screen is locked the window
+flags read false for everything, so the button stays visible — the harmless
+direction.
+
 ### Jobs
 
 `open` and `provision` run `devcontainer up`, which takes minutes on a first

@@ -363,13 +363,19 @@
 							>
 								{busy[p.name] === 'close' ? 'Closing…' : 'Close'}
 							</button>
-							<button
-								disabled={isRunning(p.name)}
-								title="reopen / rebuild and open a window"
-								onclick={() => startJob(`/api/projects/${encodeURIComponent(p.name)}/open`, {}, p.name)}
-							>
-								{isRunning(p.name) ? 'Opening…' : 'Open'}
-							</button>
+							<!-- Hidden while a window is already open on a running container:
+							     it would only reuse the container and re-focus a window the
+							     user can already see. It stays for a *stopped* container
+							     with a stale window, where reopening is still the point. -->
+							{#if p.state !== 'running' || !p.window_open}
+								<button
+									disabled={isRunning(p.name)}
+									title="reopen / rebuild and open a window"
+									onclick={() => startJob(`/api/projects/${encodeURIComponent(p.name)}/open`, {}, p.name)}
+								>
+									{isRunning(p.name) ? 'Opening…' : 'Open'}
+								</button>
+							{/if}
 						{/if}
 						{#if offer[p.name]}
 							<button class="warn" disabled={!!busy[p.name]} onclick={() => act(p.name, 'close', { force: true })}>

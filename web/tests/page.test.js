@@ -286,6 +286,23 @@ describe("open and close", () => {
     expect(screen.queryByText("—")).not.toBeInTheDocument();
   });
 
+  it("hides Open when a running container already has a window", async () => {
+    // Open would only reuse the container and re-focus a window the user can
+    // already see, so the row offers Close alone.
+    stubAction(project({ state: "running", window_open: true }));
+    render(Page);
+    expect(await screen.findByRole("button", { name: "Close" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open" })).not.toBeInTheDocument();
+  });
+
+  it("keeps Open for a stopped container that still has a window", async () => {
+    // A stale window can outlive its container (a refused close, say). Reopening
+    // is still the useful action, so the button stays.
+    stubAction(project({ state: "stopped", window_open: true }));
+    render(Page);
+    expect(await screen.findByRole("button", { name: "Open" })).toBeInTheDocument();
+  });
+
   it("offers only Open for a project with no container", async () => {
     stubAction(project({ state: "absent", container: null }));
     render(Page);
