@@ -284,6 +284,11 @@ the phone opens the URL. Authentication then finishes on its own and the next
 poll reads the container as connected. A container that is already registered
 answers `{"started": false, "detail": "… already registered"}`.
 
+`open` and `provision` take this same step automatically — and *wait* for it —
+when the container has no authkey; this endpoint is the manual retry for a row
+that is not on the tailnet after an open has finished. See "The Tailscale gate"
+below.
+
 ### Which button a row offers
 
 | state | window | screen | buttons |
@@ -369,9 +374,37 @@ devopen's config carries an authkey, and leaves `fresh`/`clean` off unless the
 body asks for them: every one of devopen's prompts is a question a server
 cannot answer, so it is a parameter with a safe default instead.
 
-When there is no authkey, the registration is not skipped silently: the new
-container's row appears with its `connection`, saying whether it is on the
-tailnet, and offering the `tailscale` action when it is not.
+With an authkey, that is the whole story — devopen registers non-interactively
+before it opens the window. Without one, `open`/`provision` do not skip the
+step: after the container is up they run the same **tailscale gate** the CLI
+takes mid-open. See below.
+
+### The Tailscale gate (the step without an authkey)
+
+The CLI can prompt "Register this container on Tailscale? [Y/n]" and then run
+`tailscale up` in the foreground, standing still until a browser finishes the
+login — so the window opens *after* the container has an address, and the
+post-start hook can start the container agent. A server cannot prompt, and
+answering `tailscale=False` (what devdash used to do with no authkey) skipped
+the step entirely: the container came up logged out, `agent-dev.sh` could not
+resolve an address, and the agent never started.
+
+So the open/provision **job** takes that step itself:
+
+1. after `devcontainer up`, it reads the container's tailscale state;
+2. if the container is on the tailnet (or has no tailscale), it is a no-op;
+3. if it is `logged_out`, it starts `tailscale up` **detached** and puts the
+   login URL on the job as `attention` — a real link the phone taps, not a URL
+   left in the build log;
+4. the job then **waits** (up to `actions.TAILSCALE_WAIT`, 10 minutes) for the
+   login to complete, mirroring the CLI's block; and
+5. once the container is connected, it re-runs the devcontainer's
+   `postStartCommand` — as the container's own user, with the right `HOME` — so
+   `agent-dev.sh` now finds an address and the agent starts.
+
+A login that never completes is not a failure: after the timeout the job
+finishes, the log says so, and the row still offers `Register` to retry. While
+the job is waiting, its view shows the `attention` link as a tap target.
 
 ### Reaching a container
 
@@ -442,7 +475,8 @@ That is also why `open` itself registers Tailscale when devopen's config
 carries an authkey: reaching a project from the phone is most of the point of
 opening it from the phone — ssh, a terminal app or VS Code all need a name to
 aim at — and `tailscale up` without a key wants a browser a server cannot
-provide. No key means the row says so, not a hang.
+provide. No key means the open job stops and shows the login link, and waits for
+it, rather than asking a browser the server cannot offer.
 
 When `open` or `provision` starts a job, the log opens as its own full-screen
 view (a `New window` link hands it to its own browser tab, `?job=<id>`), and it

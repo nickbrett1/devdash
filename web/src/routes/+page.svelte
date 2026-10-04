@@ -195,37 +195,6 @@
 		pollTimer = null;
 	}
 
-	// Register a running container on the tailnet. The server starts
-	// `tailscale up` detached and answers with the login URL, which the phone
-	// opens — the one step a server cannot complete on its own.
-	async function register(name) {
-		busy = { ...busy, [name]: 'tailscale' };
-		note = { ...note, [name]: null };
-		try {
-			const res = await fetch(`/api/projects/${encodeURIComponent(name)}/tailscale`, {
-				method: 'POST',
-				credentials: 'same-origin',
-				headers: { 'Content-Type': 'application/json' },
-				body: '{}'
-			});
-			const body = await res.json().catch(() => ({}));
-			if (res.status === 401) {
-				error = AUTH;
-				return;
-			}
-			if (!res.ok) {
-				note = { ...note, [name]: { ok: false, text: body.error || `HTTP ${res.status}` } };
-				return;
-			}
-			note = { ...note, [name]: { ok: true, text: body.detail || 'registration started', url: body.url || null } };
-			await load();
-		} catch (e) {
-			note = { ...note, [name]: { ok: false, text: `Could not reach devdash: ${e}` } };
-		} finally {
-			busy = { ...busy, [name]: null };
-		}
-	}
-
 	async function fetchRepos() {
 		try {
 			const res = await fetch('/api/repos', { credentials: 'same-origin' });
@@ -423,10 +392,10 @@
 								<span class="badge warn-badge" title="the container has tailscale but is not registered">not on tailnet</span>
 								<button
 									class="pill register"
-									disabled={!!busy[p.name]}
-									onclick={() => register(p.name)}
+									disabled={isRunning(p.name)}
+									onclick={() => startJob(`/api/projects/${encodeURIComponent(p.name)}/tailscale`, {}, p.name)}
 								>
-									{busy[p.name] === 'tailscale' ? 'Registering…' : 'Register'}
+									{isRunning(p.name) ? 'Registering…' : 'Register'}
 								</button>
 							{:else}
 								<span class="badge muted-badge">no tailscale</span>
@@ -545,8 +514,24 @@
 		{#if job.error}
 			<p class="note bad">{job.error}</p>
 		{/if}
+		{#if job.attention}
+			<p class="attention" role="alert">
+				<span>{job.attention.detail || 'Action needed to continue'}</span>
+				{#if job.attention.url}
+					<a class="login-link" href={job.attention.url} target="_blank" rel="noopener">
+						Authenticate on Tailscale ↗
+					</a>
+				{/if}
+			</p>
+		{/if}
 		{#if job.state === 'running'}
-			<p class="note">Running — a first container build takes minutes. The log follows the tail; scroll up to read back.</p>
+			<p class="note">
+				{#if job.attention}
+					Waiting for you to authenticate on the tailnet — the job continues by itself once it is done.
+				{:else}
+					Running — a first container build takes minutes. The log follows the tail; scroll up to read back.
+				{/if}
+			</p>
 		{/if}
 		{#if job.log && job.log.length}
 			<pre bind:this={logEl} onscroll={onLogScroll}>{job.log.join('\n')}</pre>
@@ -789,6 +774,26 @@
 	}
 	.note.bad {
 		color: #fca5a5;
+	}
+	/* A job that is paused on something only the phone can do — the Tailscale
+	   login. Louder than a note, because the job does not move until it is
+	   done, and the link must be a real tap target, not text in the log. */
+	.attention {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.5rem;
+		margin: 0.6rem 0 0;
+		padding: 0.6rem 0.7rem;
+		font-size: 0.85rem;
+		border: 1px solid #7f6d2d;
+		background: #2c2610;
+		color: #f0c14b;
+		border-radius: 0.5rem;
+	}
+	.attention .login-link {
+		margin-left: 0;
+		font-weight: 600;
 	}
 	.pull {
 		margin: 0 0 0.5rem;

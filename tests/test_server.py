@@ -137,17 +137,18 @@ def test_a_close_drops_the_cached_samples(live, monkeypatch):
 
 
 def test_tailscale_registration_posts_through_and_answers_with_the_url(live, monkeypatch):
-    """The registration is the step devopen cannot take without an authkey, so
-    the answer is the login URL the phone opens — not a job id."""
-    seen = {}
+    """The registration now waits for the login, so it is a job; the URL rides
+    on the job as `attention` for the phone to tap."""
     monkeypatch.setattr(actions, "register_tailscale",
-                        lambda name: seen.update(name=name) or {
-                            "name": name, "started": True,
-                            "url": "https://login.tailscale.com/a/x", "detail": "authenticate"})
+                        lambda name, **kw: {"name": name, "started": True,
+                                            "url": "https://login.tailscale.com/a/x",
+                                            "detail": "authenticate"})
     status, _, body = post(live, "/api/projects/acme/tailscale")
-    assert status == 200
-    assert seen == {"name": "acme"}
-    assert json.loads(body)["url"].startswith("https://login.tailscale.com/")
+    # The registration waits for the browser login, so like open/provision it is
+    # a job; the URL rides on the job for the phone to tap.
+    assert status == 202
+    done = wait_for_job(live, json.loads(body)["job_id"])
+    assert done["result"]["url"].startswith("https://login.tailscale.com/")
 
 
 def test_a_tailscale_registration_drops_the_cached_samples(live, monkeypatch):
@@ -239,7 +240,7 @@ def wait_for_job(port, job_id, timeout=5.0):
 def test_open_passes_fresh_and_clean_only_when_asked(live, monkeypatch):
     seen = []
     monkeypatch.setattr(actions, "open_project",
-                        lambda name, fresh=None, clean=None, on_log=None:
+                        lambda name, fresh=None, clean=None, on_log=None, **kw:
                         seen.append((fresh, clean)) or {"name": name, "uri": "uri"})
     wait_for_job(live, json.loads(post(live, "/api/projects/acme/open", None)[2])["job_id"])
     wait_for_job(live, json.loads(post(live, "/api/projects/acme/open", {"fresh": True})[2])["job_id"])

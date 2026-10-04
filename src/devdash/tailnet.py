@@ -135,6 +135,33 @@ def connection(container_id, workspace, host=None):
     }
 
 
+def wait_connected(container_id, timeout, interval=3.0, on_wait=None):
+    """Poll until the container reports `connected`, or `timeout` elapses.
+
+    This is the half a server cannot do for itself: `tailscale up` prints a
+    login URL and blocks until a browser finishes the flow. devdash starts it
+    detached and hands the URL to the phone, then waits here — the open job
+    stands still, exactly as the CLI stands still, until someone authenticates.
+    Returns True once connected, False on timeout.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        state = facts(container_id)["state"]
+        if state == "connected":
+            return True
+        # The gate only waits after reading `logged_out`, so `absent` now means
+        # the container (or its daemon) went away: there is nothing left to
+        # authenticate, and holding the job open for the full timeout would just
+        # block a retry.
+        if state == "absent":
+            return False
+        if time.monotonic() >= deadline:
+            return False
+        if on_wait:
+            on_wait()
+        time.sleep(interval)
+
+
 def _read_log(container_id):
     try:
         r = _docker(["exec", "-u", "root", container_id, "sh", "-c",

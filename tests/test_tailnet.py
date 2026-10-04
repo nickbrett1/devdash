@@ -114,3 +114,29 @@ def test_register_returns_the_login_url_once_it_appears(monkeypatch):
     assert out["started"] is True
     assert out["url"] == "https://login.tailscale.com/a/abc123"
     assert any("-d" in c for c in calls), "registration must be started detached"
+
+
+def test_wait_connected_returns_true_once_the_container_connects(monkeypatch):
+    states = iter(["logged_out", "logged_out", "connected"])
+    monkeypatch.setattr(tailnet, "facts", lambda cid: {"state": next(states), "ip": None})
+    monkeypatch.setattr(tailnet.time, "sleep", lambda seconds: None)
+    assert tailnet.wait_connected("c1", timeout=10, interval=0.01) is True
+
+
+def test_wait_connected_gives_up_while_still_logged_out(monkeypatch):
+    """A server waits, but not forever: an ignored login prompt must not hold a
+    job (and its 409) open all afternoon."""
+    calls = []
+    monkeypatch.setattr(tailnet, "facts", lambda cid: {"state": "logged_out", "ip": None})
+    monkeypatch.setattr(tailnet.time, "sleep", lambda seconds: calls.append(seconds))
+    assert tailnet.wait_connected("c1", timeout=0) is False
+    assert calls == []  # the deadline is checked before sleeping again
+
+
+def test_wait_connected_stops_early_when_the_container_disappears(monkeypatch):
+    """`absent` mid-wait means the container is gone — there is nothing left to
+    authenticate, and holding the job for the full timeout would block a retry."""
+    monkeypatch.setattr(tailnet, "facts", lambda cid: {"state": "absent", "ip": None})
+    monkeypatch.setattr(tailnet.time, "sleep", lambda seconds: (_ for _ in ()).throw(
+        AssertionError("must not keep polling a container that is gone")))
+    assert tailnet.wait_connected("c1", timeout=600) is False

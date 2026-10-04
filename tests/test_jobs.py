@@ -30,7 +30,7 @@ def wait_for(job_id, timeout=5.0):
 
 
 def test_a_job_records_its_result():
-    started = jobs.start("open", "acme", lambda on_log: {"uri": "vscode-remote://x"})
+    started = jobs.start("open", "acme", lambda on_log, on_attention=None: {"uri": "vscode-remote://x"})
     # Deliberately not asserting "running": the thread may already have finished,
     # and a caller that races the job must not see a broken snapshot.
     assert started["state"] in ("running", "done")
@@ -42,7 +42,7 @@ def test_a_job_records_its_result():
 
 
 def test_the_on_log_sink_becomes_the_log():
-    def work(on_log):
+    def work(on_log, on_attention=None):
         on_log("Cloning acme")
         on_log("Container ready")
         return "ok"
@@ -51,10 +51,30 @@ def test_the_on_log_sink_becomes_the_log():
     assert done["log"] == ["Cloning acme", "Container ready"]
 
 
+def test_a_job_can_pause_on_a_prompt_that_clears_when_it_finishes():
+    """A URL in a build transcript is not tappable; the job carries it as
+    structured state the phone renders as a link, and drops it once the job is
+    no longer waiting on anyone."""
+    release = threading.Event()
+
+    def work(on_log, on_attention=None):
+        on_attention({"kind": "tailscale", "url": "https://login.tailscale.com/a/x"})
+        release.wait(5)
+        return "ok"
+
+    started = jobs.start("open", "acme", work)
+    deadline = time.time() + 5
+    while time.time() < deadline and jobs.get(started["job_id"])["attention"] is None:
+        time.sleep(0.01)
+    assert jobs.get(started["job_id"])["attention"]["url"].startswith("https://login.tailscale.com/")
+    release.set()
+    assert wait_for(started["job_id"])["attention"] is None
+
+
 def test_an_exception_fails_the_job_with_its_type():
     """The type is kept because 'ActionError: …' and 'OSError: …' mean different
     things to whoever is reading the log on a phone."""
-    def work(on_log):
+    def work(on_log, on_attention=None):
         raise ValueError("docker is not installed")
 
     done = wait_for(jobs.start("open", "acme", work)["job_id"])
@@ -64,7 +84,7 @@ def test_an_exception_fails_the_job_with_its_type():
 
 
 def test_the_log_is_a_capped_tail():
-    def work(on_log):
+    def work(on_log, on_attention=None):
         for i in range(jobs.MAX_LINES + 50):
             on_log(f"line {i}")
 
@@ -80,8 +100,8 @@ def test_get_returns_none_for_an_unknown_id():
 
 def test_running_filters_by_kind_and_target():
     release = threading.Event()
-    stuck = jobs.start("open", "acme", lambda on_log: release.wait(5))
-    jobs.start("open", "example-one", lambda on_log: None)
+    stuck = jobs.start("open", "acme", lambda on_log, on_attention=None: release.wait(5))
+    jobs.start("open", "example-one", lambda on_log, on_attention=None: None)
     try:
         assert [j["job_id"] for j in jobs.running(target="acme")] == [stuck["job_id"]]
         assert jobs.running(kind="provision") == []
@@ -95,10 +115,10 @@ def test_running_filters_by_kind_and_target():
 
 def test_the_table_is_bounded_but_never_drops_a_running_job():
     release = threading.Event()
-    stuck = jobs.start("open", "stuck", lambda on_log: release.wait(5))
+    stuck = jobs.start("open", "stuck", lambda on_log, on_attention=None: release.wait(5))
     try:
         for i in range(jobs.MAX_JOBS + 10):
-            done = jobs.start("open", f"p{i}", lambda on_log: None)
+            done = jobs.start("open", f"p{i}", lambda on_log, on_attention=None: None)
             wait_for(done["job_id"])
         assert len(jobs.running()) + len(_finished_ids()) <= jobs.MAX_JOBS + 1
         assert jobs.get(stuck["job_id"]) is not None

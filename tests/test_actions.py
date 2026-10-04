@@ -6,6 +6,8 @@ the *policy* — what devdash refuses, what it passes on, and what it does to th
 two halves of Close when only one of them can succeed.
 """
 
+import subprocess
+
 import pytest
 
 from devdash import actions, projects
@@ -42,6 +44,10 @@ def rows(monkeypatch):
     monkeypatch.setattr(actions.reap_config, "load", lambda: {"workspaces_dir": "/w"})
     # Default: no tailscale authkey configured, so `open` stays silent.
     monkeypatch.setattr(actions.devopen_config, "load", lambda: {"tailscale_authkey": ""})
+    # The tailscale gate looks the container up in docker directly; by default a
+    # test has no container, so the gate is a no-op and open/provision results
+    # are unchanged. A test that wants the gate shapes this list.
+    monkeypatch.setattr(actions.containers, "list_devcontainers", list)
     return state
 
 
@@ -201,18 +207,22 @@ def test_open_turns_a_devopen_failure_into_an_action_error(rows, monkeypatch):
 # -- tailscale registration --------------------------------------------------
 
 
-def test_register_tailscale_starts_a_detached_up_and_returns_the_url(rows, monkeypatch):
-    """The registration a server *can* drive: started detached inside the
-    container, answering with the login URL the phone opens."""
-    seen = {}
+def test_register_tailscale_registers_waits_and_starts_the_agent(rows, monkeypatch):
+    """The manual retry now stands still for the login and re-runs the hook, so
+    it also fixes a container that was already on the tailnet but whose agent
+    never came up."""
+    monkeypatch.setattr(actions.containers, "list_devcontainers", lambda: [_container()])
+    monkeypatch.setattr(actions.tailnet, "facts",
+                        lambda cid: {"state": "logged_out", "ip": None})
     monkeypatch.setattr(actions.tailnet, "register",
-                        lambda cid, host: seen.update(cid=cid, host=host) or {
-                            "started": True, "url": "https://login.tailscale.com/a/x",
-                            "detail": "authenticate"})
+                        lambda cid, host: {"started": True, "url": "https://login.tailscale.com/a/x",
+                                           "detail": "authenticate"})
+    monkeypatch.setattr(actions.tailnet, "wait_connected", lambda cid, timeout, **kw: True)
+    monkeypatch.setattr(actions, "start_agent", lambda cid, ws: (True, "ok"))
     out = actions.register_tailscale("acme")
-    assert seen == {"cid": "acme-dev", "host": "acme"}
-    assert out == {"name": "acme", "started": True,
-                   "url": "https://login.tailscale.com/a/x", "detail": "authenticate"}
+    assert out["name"] == "acme" and out["started"] is True
+    assert out["state"] == "connected" and out["agent_started"] is True
+    assert out["url"].startswith("https://login.tailscale.com/")
 
 
 def test_register_tailscale_refuses_a_container_that_is_not_running(rows):
@@ -220,6 +230,154 @@ def test_register_tailscale_refuses_a_container_that_is_not_running(rows):
     with pytest.raises(actions.ActionError) as excinfo:
         actions.register_tailscale("acme")
     assert "not running" in str(excinfo.value)
+
+
+# -- the tailscale gate that open/provision run ------------------------------
+#
+# This is the step the CLI takes mid-open and devdash used to skip without an
+# authkey. It must stop the job, hand the phone the login URL, wait, and only
+# then re-run the post-start hook so the container agent starts with an address.
+
+
+def _container(**over):
+    c = {"id": "acme-dev", "name": "acme-dev", "workspace": "/w/acme", "running": True}
+    c.update(over)
+    return c
+
+
+def test_gate_is_a_noop_without_a_container(rows):
+    assert actions.tailscale_gate("acme", lambda line: None) is None
+
+
+def test_gate_is_a_noop_when_already_connected(rows, monkeypatch):
+    monkeypatch.setattr(actions.containers, "list_devcontainers", lambda: [_container()])
+    monkeypatch.setattr(actions.tailnet, "facts",
+                        lambda cid: {"state": "connected", "ip": "100.0.0.1"})
+    assert actions.tailscale_gate("acme", lambda line: None) is None
+
+
+def test_gate_registers_waits_then_starts_the_agent(rows, monkeypatch):
+    monkeypatch.setattr(actions.containers, "list_devcontainers", lambda: [_container()])
+    monkeypatch.setattr(actions.tailnet, "facts",
+                        lambda cid: {"state": "logged_out", "ip": None})
+    monkeypatch.setattr(actions.tailnet, "register",
+                        lambda cid, host: {"started": True, "detail": "authenticate",
+                                           "url": "https://login.tailscale.com/a/x"})
+    monkeypatch.setattr(actions.tailnet, "wait_connected", lambda cid, timeout, **kw: True)
+    started = {}
+    monkeypatch.setattr(actions, "start_agent",
+                        lambda cid, ws: started.update(cid=cid, ws=ws) or (True, "ok"))
+    seen = {}
+    out = actions.tailscale_gate(
+        "acme",
+        lambda line: seen.setdefault("log", []).append(line),
+        lambda payload: seen.update(attention=payload),
+    )
+    assert out["state"] == "connected"
+    assert out["connected"] is True and out["agent_started"] is True
+    assert started == {"cid": "acme-dev", "ws": "/w/acme"}
+    # The URL reaches the caller as structured state, not only as a log line, so
+    # the phone can render a tap target.
+    assert seen["attention"]["kind"] == "tailscale"
+    assert seen["attention"]["url"].startswith("https://login.tailscale.com/")
+    assert any("login.tailscale.com" in line for line in seen["log"])
+
+
+def test_gate_reports_a_timeout_without_touching_the_agent(rows, monkeypatch):
+    monkeypatch.setattr(actions.containers, "list_devcontainers", lambda: [_container()])
+    monkeypatch.setattr(actions.tailnet, "facts",
+                        lambda cid: {"state": "logged_out", "ip": None})
+    monkeypatch.setattr(actions.tailnet, "register",
+                        lambda cid, host: {"started": True, "detail": "authenticate",
+                                           "url": "https://login.tailscale.com/a/x"})
+    monkeypatch.setattr(actions.tailnet, "wait_connected", lambda cid, timeout, **kw: False)
+
+    def must_not_start(*a, **kw):
+        raise AssertionError("the agent must not start before the container is on the tailnet")
+
+    monkeypatch.setattr(actions, "start_agent", must_not_start)
+    out = actions.tailscale_gate("acme", lambda line: None)
+    assert out["state"] == "logged_out"
+    assert out["connected"] is False and "agent_started" not in out
+
+
+def test_open_project_carries_the_tailscale_result(rows, monkeypatch):
+    monkeypatch.setattr(actions.opener, "open_repo", lambda repo_url, **kw: "uri")
+    monkeypatch.setattr(actions, "tailscale_gate",
+                        lambda name, on_log, on_attention=None:
+                        {"state": "logged_out", "url": "https://login.tailscale.com/a/x"})
+    out = actions.open_project("acme")
+    assert out["tailscale"]["url"].startswith("https://login.tailscale.com/")
+
+
+def test_provision_carries_the_tailscale_result(rows, monkeypatch):
+    monkeypatch.setattr(actions.opener, "open_repo", lambda repo_url, **kw: "uri")
+    monkeypatch.setattr(actions, "tailscale_gate",
+                        lambda name, on_log, on_attention=None: {"state": "connected"})
+    out = actions.provision("acme", on_log=lambda line: None)
+    assert out["tailscale"] == {"state": "connected"}
+
+
+def test_start_agent_reruns_the_hook_as_the_container_user(monkeypatch, tmp_path):
+    """The hook must run as the container's own user with the right HOME — this
+    repo's is `node`, and `docker exec -u vscode` would simply fail."""
+    ws = tmp_path / "acme"
+    (ws / ".devcontainer").mkdir(parents=True)
+    (ws / ".devcontainer" / "devcontainer.json").write_text(
+        '{"workspaceFolder": "/workspaces/acme", '
+        '"postStartCommand": "bash /workspaces/acme/.devcontainer/post-start-setup.sh"}')
+    calls = []
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        script = argv[-1]
+        if argv[2:4] == ["-u", "root"] and "stat -c %U" in script:
+            return subprocess.CompletedProcess(argv, 0, "node\n", "")
+        if argv[2:4] == ["-u", "root"] and "getent passwd" in script:
+            return subprocess.CompletedProcess(argv, 0, "/home/node\n", "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(actions.subprocess, "run", fake_run)
+    ok, detail = actions.start_agent("acme-dev", str(ws))
+    assert ok is True and "post-start" in detail
+    hook = calls[-1]
+    assert hook[2:4] == ["-u", "node"]
+    assert "HOME=/home/node" in hook
+    assert hook[hook.index("-w") + 1] == "/workspaces/acme"
+    assert hook[-3:] == ["sh", "-lc",
+                         "bash /workspaces/acme/.devcontainer/post-start-setup.sh"]
+
+
+def test_start_agent_reports_a_failed_hook(monkeypatch, tmp_path):
+    ws = tmp_path / "acme"
+    (ws / ".devcontainer").mkdir(parents=True)
+    (ws / ".devcontainer" / "devcontainer.json").write_text('{"postStartCommand": "boom"}')
+    monkeypatch.setattr(actions.subprocess, "run",
+                        lambda argv, **kw: subprocess.CompletedProcess(argv, 3, "", "agent: no address"))
+    ok, detail = actions.start_agent("acme-dev", str(ws))
+    assert ok is False
+    assert "exited 3" in detail and "no address" in detail
+
+
+def test_start_agent_without_a_hook_is_reported_not_guessed(tmp_path):
+    (tmp_path / ".devcontainer").mkdir()
+    (tmp_path / ".devcontainer" / "devcontainer.json").write_text("{}")
+    ok, detail = actions.start_agent("acme-dev", str(tmp_path))
+    assert ok is False and "no postStartCommand" in detail
+
+
+def test_post_start_command_reads_a_string_and_an_array(tmp_path):
+    config = tmp_path / ".devcontainer"
+    config.mkdir()
+    (config / "devcontainer.json").write_text('{"postStartCommand": "echo hi"}')
+    assert actions._post_start_command(actions._devcontainer_config(str(tmp_path))) == ["sh", "-lc", "echo hi"]
+
+    (config / "devcontainer.json").write_text('{"postStartCommand": ["echo", "hi"]}')
+    assert actions._post_start_command(actions._devcontainer_config(str(tmp_path))) == ["echo", "hi"]
+
+    (config / "devcontainer.json").write_text("{}")
+    assert actions._post_start_command(actions._devcontainer_config(str(tmp_path))) is None
+    assert actions._post_start_command(actions._devcontainer_config("/nonexistent")) is None
 
 
 # -- provision ---------------------------------------------------------------

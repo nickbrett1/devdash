@@ -43,7 +43,7 @@ def _flag(key, body, query, default=False):
     return default
 
 
-def _run_job(fn, on_log, body, query):
+def _run_job(fn, on_log, on_attention, body, query):
     """Run a job's action, then drop the cached samples.
 
     A `devcontainer up` that has just finished is exactly the moment the list
@@ -53,6 +53,7 @@ def _run_job(fn, on_log, body, query):
     try:
         return fn(
             on_log=on_log,
+            on_attention=on_attention,
             fresh=_flag("fresh", body, query, default=None),
             clean=_flag("clean", body, query, default=None),
         )
@@ -150,16 +151,14 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json(result)
                 return
 
-            # /api/projects/<name>/tailscale — start registering a running
-            # container and answer with the login URL. Detached inside the
-            # container, so this returns in the time it takes the URL to print,
-            # not the time it takes a human to open it.
+            # /api/projects/<name>/tailscale — register a running container on
+            # the tailnet. It waits for the browser login, so like open/provision
+            # it answers 202 with a job id; the login URL rides on the job as
+            # `attention` for the phone to tap.
             if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "tailscale":
-                result = actions.register_tailscale(parts[2])
-                # The connection sample is cached; the phone reloads the moment
-                # this returns to show the state it is about to change.
-                projects.invalidate()
-                self._send_json(result)
+                self._start("tailscale", parts[2], body, query,
+                            lambda on_log, **kw: actions.register_tailscale(
+                                parts[2], on_log=on_log, on_attention=kw.get("on_attention")))
                 return
 
             # /api/projects/<name>/open and /api/provision — potentially minutes
@@ -200,8 +199,8 @@ class Handler(SimpleHTTPRequestHandler):
                              "job_id": existing["job_id"], "state": existing["state"]},
                             status=409)
             return
-        snapshot = jobs.start(kind, target, lambda on_log: _run_job(
-            fn, on_log, body, query))
+        snapshot = jobs.start(kind, target, lambda on_log, on_attention: _run_job(
+            fn, on_log, on_attention, body, query))
         self._send_json(snapshot, status=202)
 
     def _json_body(self):

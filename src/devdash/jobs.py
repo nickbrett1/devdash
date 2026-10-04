@@ -40,7 +40,17 @@ class Job:
         self.started = time.time()
         self.finished = None
         self._lines = []
+        # A job can stop and ask for something a phone has to do — completing a
+        # Tailscale login, for instance. That is not a log line (a URL buried in
+        # a build transcript is not tappable) and not a failure; it is structured
+        # state the UI renders as a prompt. None when there is nothing to do.
+        self._attention = None
         self._lock = threading.Lock()
+
+    def attention(self, payload):
+        """Set (or clear, with None) what this job is waiting on the human for."""
+        with self._lock:
+            self._attention = payload
 
     def log(self, line):
         """The `on_log` sink devopen and devreap write to. Called from the job's
@@ -56,6 +66,9 @@ class Job:
             self.result = result
             self.error = error
             self.finished = time.time()
+            # A finished job is no longer waiting on anyone: the prompt would be
+            # a stale "please authenticate" over a job that has already moved on.
+            self._attention = None
 
     def snapshot(self):
         with self._lock:
@@ -65,6 +78,7 @@ class Job:
                 "target": self.target,
                 "state": self.state,
                 "log": list(self._lines),
+                "attention": self._attention,
                 "result": self.result,
                 "error": self.error,
                 "running_for": (self.finished or time.time()) - self.started,
@@ -88,7 +102,7 @@ def _sweep():
 
 
 def start(kind, target, fn):
-    """Run `fn(on_log=…)` in a thread. Returns the first snapshot.
+    """Run `fn(on_log=…, on_attention=…)` in a thread. Returns the first snapshot.
 
     `fn`'s return value becomes `result`; anything it raises becomes `error`,
     because a job thread that dies silently is worse than a job that fails —
@@ -101,7 +115,7 @@ def start(kind, target, fn):
 
     def run():
         try:
-            result = fn(on_log=job.log)
+            result = fn(on_log=job.log, on_attention=job.attention)
         except Exception as e:  # noqa: BLE001 — a job must always reach a state
             job.finish(error=f"{type(e).__name__}: {e}")
         else:

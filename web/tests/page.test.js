@@ -129,6 +129,25 @@ function project(over = {}) {
   };
 }
 
+/** A fetch stub keyed by method+path, so a job can be polled to completion. */
+function stubRoutes(routes) {
+  const calls = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url, init = {}) => {
+      const key = `${init.method || "GET"} ${String(url)}`;
+      calls.push({ key, body: init.body ? JSON.parse(init.body) : undefined });
+      const route = routes.find((r) => key.startsWith(r.key));
+      if (!route) throw new Error(`unstubbed request: ${key}`);
+      return jsonResponse(
+        typeof route.body === "function" ? route.body(calls.length) : route.body,
+        route.status || 200,
+      );
+    }),
+  );
+  return calls;
+}
+
 /** Stub fetch with one project and a canned answer for the next POST. */
 function stubAction(row = project(), postBody = {}, postStatus = 200, screenLocked = false) {
   const calls = [];
@@ -149,25 +168,6 @@ function stubAction(row = project(), postBody = {}, postStatus = 200, screenLock
 
 describe("the jobs a phone starts", () => {
   const AUTH = { Authorization: "Bearer x" };
-
-  /** A fetch stub keyed by method+path, so a job can be polled to completion. */
-  function stubRoutes(routes) {
-    const calls = [];
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (url, init = {}) => {
-        const key = `${init.method || "GET"} ${String(url)}`;
-        calls.push({ key, body: init.body ? JSON.parse(init.body) : undefined });
-        const route = routes.find((r) => key.startsWith(r.key));
-        if (!route) throw new Error(`unstubbed request: ${key}`);
-        return jsonResponse(
-          typeof route.body === "function" ? route.body(calls.length) : route.body,
-          route.status || 200,
-        );
-      }),
-    );
-    return calls;
-  }
 
   it("starts an open as a job and streams the log from the poll", async () => {
     vi.useFakeTimers();
@@ -314,6 +314,40 @@ describe("the jobs a phone starts", () => {
     }
   });
 
+  it("renders a job's pending Tailscale login as a tappable link", async () => {
+    window.history.pushState({}, "", "/?job=j9");
+    try {
+      stubRoutes([
+        { key: "GET /api/projects", body: { projects: [], window_titles: 0 } },
+        { key: "GET /api/status", body: STATUS },
+        {
+          key: "GET /api/jobs/j9",
+          body: {
+            job_id: "j9",
+            kind: "provision",
+            target: "acme",
+            state: "running",
+            log: ["Cloning acme"],
+            attention: {
+              kind: "tailscale",
+              url: "https://login.tailscale.com/a/x",
+              detail: "Authenticate acme on the tailnet to finish",
+            },
+          },
+        },
+      ]);
+      render(Page);
+
+      // The URL is a real link, not a line in the log: the job stands still
+      // until the phone can tap it, so it must be a tap target.
+      const link = await screen.findByRole("link", { name: /Authenticate on Tailscale/ });
+      expect(link).toHaveAttribute("href", "https://login.tailscale.com/a/x");
+      expect(screen.getByText(/Authenticate acme on the tailnet to finish/)).toBeInTheDocument();
+    } finally {
+      window.history.pushState({}, "", "/");
+    }
+  });
+
   it("shows a listing error beside the picker rather than hiding it", async () => {
     stubRoutes([
       { key: "GET /api/projects", body: { projects: [], window_titles: 0 } },
@@ -353,18 +387,56 @@ describe("reaching a running container", () => {
   });
 
   it("offers Register when the container is on tailscale but not registered", async () => {
-    const calls = stubAction(
-      project({ state: "running", connection: { ...connected, state: "logged_out", blink: null, ssh: null } }),
-      { name: "acme", started: true, url: "https://login.tailscale.com/a/x", detail: "authenticate" },
-    );
-    render(Page);
+    // Register is a job like the gate: it drives the login, waits for the
+    // tailnet, then starts the agent. So it lands in the job view, whose
+    // attention link is the tap target the phone needs.
+    const calls = stubRoutes([
+      {
+        key: "GET /api/projects",
+        body: {
+          projects: [
+            project({ state: "running", connection: { ...connected, state: "logged_out", blink: null, ssh: null } }),
+          ],
+          window_titles: 0,
+        },
+      },
+      { key: "GET /api/status", body: STATUS },
+      {
+        key: "POST /api/projects/acme/tailscale",
+        status: 202,
+        body: { job_id: "j1", kind: "tailscale", target: "acme", state: "running", log: [] },
+      },
+      {
+        key: "GET /api/jobs/j1",
+        body: {
+          job_id: "j1",
+          kind: "tailscale",
+          target: "acme",
+          state: "running",
+          log: ["Registering acme on the tailnet"],
+          attention: {
+            kind: "tailscale",
+            url: "https://login.tailscale.com/a/x",
+            detail: "Authenticate acme on the tailnet to finish",
+          },
+        },
+      },
+    ]);
+    vi.useFakeTimers();
+    try {
+      render(Page);
 
-    await fireEvent.click(await screen.findByRole("button", { name: "Register" }));
+      await fireEvent.click(await screen.findByRole("button", { name: "Register" }));
 
-    expect(calls).toEqual([{ url: "/api/projects/acme/tailscale", body: {} }]);
-    // The login URL is the whole point: the phone has to open it.
-    const link = await screen.findByRole("link", { name: /open login/ });
-    expect(link).toHaveAttribute("href", "https://login.tailscale.com/a/x");
+      expect(calls).toContainEqual({ key: "POST /api/projects/acme/tailscale", body: {} });
+
+      await vi.advanceTimersByTimeAsync(1100);
+      // The login URL is the whole point: the phone has to open it.
+      const link = screen.getByRole("link", { name: /Authenticate on Tailscale/ });
+      expect(link).toHaveAttribute("href", "https://login.tailscale.com/a/x");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("says so when a container has no tailscale at all", async () => {
