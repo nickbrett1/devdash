@@ -320,7 +320,8 @@ def test_provision_carries_the_tailscale_result(rows, monkeypatch):
 
 def test_start_agent_reruns_the_hook_as_the_container_user(monkeypatch, tmp_path):
     """The hook must run as the container's own user with the right HOME — this
-    repo's is `node`, and `docker exec -u vscode` would simply fail."""
+    repo's is `node`, and `docker exec -u vscode` would simply fail. With no
+    `remoteUser` in the config, the container's own `Config.User` is the source."""
     ws = tmp_path / "acme"
     (ws / ".devcontainer").mkdir(parents=True)
     (ws / ".devcontainer" / "devcontainer.json").write_text(
@@ -330,10 +331,9 @@ def test_start_agent_reruns_the_hook_as_the_container_user(monkeypatch, tmp_path
 
     def fake_run(argv, **kw):
         calls.append(argv)
-        script = argv[-1]
-        if argv[2:4] == ["-u", "root"] and "stat -c %U" in script:
+        if "inspect" in argv:
             return subprocess.CompletedProcess(argv, 0, "node\n", "")
-        if argv[2:4] == ["-u", "root"] and "getent passwd" in script:
+        if argv[2:4] == ["-u", "root"] and "getent passwd" in argv[-1]:
             return subprocess.CompletedProcess(argv, 0, "/home/node\n", "")
         return subprocess.CompletedProcess(argv, 0, "", "")
 
@@ -346,6 +346,45 @@ def test_start_agent_reruns_the_hook_as_the_container_user(monkeypatch, tmp_path
     assert hook[hook.index("-w") + 1] == "/workspaces/acme"
     assert hook[-3:] == ["sh", "-lc",
                          "bash /workspaces/acme/.devcontainer/post-start-setup.sh"]
+
+
+def test_container_user_falls_back_to_the_workspace_owner(monkeypatch, tmp_path):
+    """When the container's config names no user, the workspace owner is the last
+    guess (`stat`). A root-owned workspace here means root, not a crash."""
+    ws = tmp_path / "acme"
+    calls = []
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        if "inspect" in argv:
+            return subprocess.CompletedProcess(argv, 0, "\n", "")
+        if "stat -c %U" in argv[-1]:
+            return subprocess.CompletedProcess(argv, 0, "vscode\n", "")
+        if "getent passwd" in argv[-1]:
+            return subprocess.CompletedProcess(argv, 0, "/home/vscode\n", "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(actions.subprocess, "run", fake_run)
+    assert actions._container_user("acme-dev", {"workspaceFolder": "/workspaces/acme"}, str(ws)) == (
+        "vscode",
+        "/home/vscode",
+    )
+
+
+def test_container_user_prefers_remote_user_over_the_container(monkeypatch, tmp_path):
+    """An explicit `remoteUser` in the config wins; we do not even inspect."""
+    calls = []
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        assert "inspect" not in argv
+        return subprocess.CompletedProcess(argv, 0, "/home/node\n", "")
+
+    monkeypatch.setattr(actions.subprocess, "run", fake_run)
+    assert actions._container_user("acme-dev", {"remoteUser": "node"}, str(tmp_path / "acme")) == (
+        "node",
+        "/home/node",
+    )
 
 
 def test_start_agent_reports_a_failed_hook(monkeypatch, tmp_path):

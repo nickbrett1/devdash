@@ -327,10 +327,14 @@ def _post_start_command(config):
 
 def _container_user(container_id, config, workspace):
     """(user, home) for the container's working user, or (None, None) to let
-    docker pick. `remoteUser` wins; otherwise the owner of the workspace folder
-    is the user the devcontainer runs as. Read as root — the workspace may be
-    owned by a user this process is not."""
+    docker pick. `remoteUser` wins, then the container's configured `User`
+    (what the devcontainer CLI actually runs it as), then the owner of the
+    workspace folder. The `stat` guess is last because Docker Desktop's virtiofs
+    can show the workspace as `root` to a root process even when it is not —
+    the configured user is the truth the post-start hook saw."""
     name = config.get("remoteUser")
+    if not (isinstance(name, str) and name):
+        name = _container_config_user(container_id)
     if not (isinstance(name, str) and name):
         workdir = config.get("workspaceFolder") or ("/workspaces/" + os.path.basename(workspace.rstrip("/")))
         out = _exec_root(container_id, f"stat -c %U {shlex.quote(workdir)} 2>/dev/null")
@@ -341,6 +345,21 @@ def _container_user(container_id, config, workspace):
     if not home and name != "root":
         home = f"/home/{name}"
     return name, home or None
+
+
+def _container_config_user(container_id):
+    """The user the container is configured to run as (`Config.User`), or ''. The
+    devcontainer CLI sets this to `remoteUser` (or the image's user), so it is the
+    user `postStartCommand` ran as — the dependable answer when the config does
+    not spell out a `remoteUser` and the workspace owner is misleading."""
+    try:
+        r = subprocess.run(
+            [containers.DOCKER, "inspect", "-f", "{{.Config.User}}", container_id],
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return (r.stdout or "").strip()
 
 
 def _exec_root(container_id, script, timeout=30):
