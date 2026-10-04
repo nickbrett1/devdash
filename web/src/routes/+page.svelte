@@ -863,6 +863,7 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
+		box-sizing: border-box;
 		width: 100%;
 		min-height: 2.75rem;
 		margin-bottom: 0.75rem;
