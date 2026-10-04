@@ -21,6 +21,8 @@ from devopen import opener
 from devreap import config as reap_config
 from devreap import containers, vscode
 
+from . import tailnet
+
 # Mirror devopen's one-shot, non-destructive path. `fresh` would delete an
 # existing container and rebuild it (a prompt on the CLI), `clean` would blow
 # away untracked files (another prompt); both stay off unless a caller asks.
@@ -143,6 +145,22 @@ def provision(repo, on_log, fresh=None, clean=None):
     workspaces = cfg.get("workspaces_dir")
     uri = _open(expanded, workspaces, on_log, fresh=fresh, clean=clean)
     return {"name": name, "repo": expanded, "uri": uri}
+
+
+def register_tailscale(name):
+    """Start registering a running container on the tailnet, and hand back the
+    login URL.
+
+    The step devopen can only take with an authkey. Without one, `tailscale up`
+    blocks until a browser authenticates — no use to a server — so this starts
+    it detached and returns the URL, which the phone opens. The registration
+    completes on its own; the connection probe then reads it as connected.
+    """
+    row = _row(name)
+    if row["state"] != "running":
+        raise ActionError(f"{name} is not running — open it first")
+    result = tailnet.register(row["container"], row["name"])
+    return {"name": name, **result}
 
 
 def _open(repo_ref, workspaces_dir, on_log, fresh=None, clean=None):

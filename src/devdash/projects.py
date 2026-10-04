@@ -16,7 +16,7 @@ from contextlib import suppress
 from devreap import buildkite, containers, vscode
 from devreap import config as reap_config
 
-from . import screen
+from . import screen, tailnet
 
 # Reading order for the list: what is up, then what is down but present, then
 # what is only a directory. A row's state is the thing the page exists to show,
@@ -111,7 +111,12 @@ _containers = _Memo(3.0, lambda: containers.list_devcontainers())
 # A docker stats sample: ~1.9s, and the numbers move slowly. One poll sees it;
 # the next two are free.
 _status_sample = _Memo(15.0, lambda: _sample_status())
-_MEMOS = (_containers, _status_sample)
+# One `docker exec` per running container, and the answer barely moves: where a
+# container sits on the tailnet changes only when it registers or is rebuilt.
+# The same 15s as the stats sample — long enough that a poll is free, short
+# enough that a registration the user just completed shows up on the next look.
+_tailnet_sample = _Memo(15.0, lambda: _sample_tailnet())
+_MEMOS = (_containers, _status_sample, _tailnet_sample)
 
 
 def warm():
@@ -146,6 +151,19 @@ def memory():
     `docker stats`, and a stopped container is using nothing.
     """
     return _status_sample.get()["stats"]
+
+
+def connections():
+    """{container id: tailnet facts} for everything running.
+
+    A running project's reachability — its tailnet state, the ssh target and the
+    Blink host — read from the same sample the rows are built from. A failure
+    here is not fatal to the page: a missing tailscale is common, and the join
+    already degrades every other probe rather than 500ing.
+    """
+    with suppress(Exception):
+        return _tailnet_sample.get()
+    return {}
 
 
 def reset():
@@ -202,7 +220,7 @@ def _last_build(org, slug, token, now):
     return days, label
 
 
-def rows(now=None, probe_builds=True, memory=None):
+def rows(now=None, probe_builds=True, memory=None, connections=None):
     """One dict per project: running first, then stopped, then absent, each
     group by name. Read-only: no container is started, stopped or otherwise
     touched.
@@ -215,6 +233,11 @@ def rows(now=None, probe_builds=True, memory=None):
     sampled docker stats. The server passes `projects.memory()` so a row carries
     `mem_bytes`; a caller that has not paid for a sample gets None per row
     rather than a hidden two-second read.
+
+    `connections` is {container id: tailnet facts} from `projects.connections()`,
+    the same shape of answer: the server passes it so a running row can carry
+    how to reach the container (`connection`), and a caller that has not paid
+    for the probe gets None rather than a hidden `docker exec` per project.
     """
     cfg = reap_config.load()
     now = now or dt.datetime.now(dt.UTC)
@@ -260,6 +283,9 @@ def rows(now=None, probe_builds=True, memory=None):
         state = "absent" if not c else ("running" if c["running"] else "stopped")
         live, evidence = lives.get(c["id"], (False, "")) if c else (False, "")
         days, label = last_builds.get(name, (None, None))
+        # Only a running container can be reached: a stopped one has no daemon
+        # to probe, and its tailnet state is not what the row is about.
+        link = connections.get(c["id"]) if (connections and c and state == "running") else None
         out.append({
             "name": name,
             "path": path,
@@ -270,6 +296,7 @@ def rows(now=None, probe_builds=True, memory=None):
             "mem_bytes": memory.get(c["id"]) if (memory and c) else None,
             "live_session": live,
             "live_evidence": evidence,
+            "connection": link,
             "window_open": path in open_windows,
             "pipeline": pipeline_for(name, cfg),
             "last_human_build_days": days,
@@ -312,6 +339,23 @@ def _windows(paths):
     open_windows, window_error = vscode.windows_for(list(paths.values()))
     titles, _ = vscode.list_window_titles()
     return open_windows, window_error, titles
+
+
+def _sample_tailnet():
+    """{container id: connection} for every running container, in parallel.
+
+    The probe is one `docker exec` per container, and they are independent, so
+    a list of ten costs one exec of wall-clock rather than ten. Anything that
+    cannot be reached degrades to "absent" inside `tailnet.connection`.
+    """
+    devcontainers = _containers.get()
+    running = [c for c in devcontainers if c["running"]]
+    if not running:
+        return {}
+    with ThreadPoolExecutor(max_workers=min(8, len(running))) as pool:
+        futures = {c["id"]: pool.submit(tailnet.connection, c["id"], c["workspace"])
+                   for c in running}
+    return {cid: f.result() for cid, f in futures.items()}
 
 
 def _live_sessions(running):

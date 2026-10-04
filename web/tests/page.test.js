@@ -85,21 +85,21 @@ describe("the project list", () => {
 });
 
 describe("the status strip", () => {
-  it("summarises memory, counts and visible windows", async () => {
+  it("summarises memory and the container counts", async () => {
     render(Page);
     expect(await screen.findByText("8 GB / 16 GB")).toBeInTheDocument();
-    // The raw title count is the tell for a lost Accessibility grant.
-    expect(screen.getByText("3")).toBeInTheDocument();
-    expect(screen.getByText("vscode windows")).toBeInTheDocument();
+    expect(screen.getByText("containers")).toBeInTheDocument();
+    expect(screen.getByText("devcontainers")).toBeInTheDocument();
   });
 
-  it("refuses to state a window count while the screen is locked", async () => {
-    // A locked screen reports zero windows for every app with no error, so a
-    // bare "0" reads as "nothing open" — the strip must say why it cannot know.
-    stubFetch({ ...PROJECTS, window_titles: 0, screen_locked: true });
+  it("reports no window count", async () => {
+    // The count was noise: work happens over SSH inside the container, so how
+    // many VS Code windows System Events can see says nothing about it.
+    stubFetch({ ...PROJECTS, window_titles: 9 });
     render(Page);
-    expect(await screen.findByText("windows hidden — screen locked")).toBeInTheDocument();
+    expect(await screen.findByText("containers")).toBeInTheDocument();
     expect(screen.queryByText("vscode windows")).not.toBeInTheDocument();
+    expect(screen.queryByText("windows hidden — screen locked")).not.toBeInTheDocument();
   });
 });
 
@@ -238,12 +238,80 @@ describe("the jobs a phone starts", () => {
         body: { job_id: "j2", kind: "provision", target: "nickbrett1/greenfield", state: "running" },
       },
     ]);
+    // The picker is the `?provision=1` window, so it is already open when the
+    // window loads; tapping Provision closes it and the build log takes over.
+    window.history.pushState({}, "", "/?provision=1");
+    try {
+      render(Page);
+      await fireEvent.click(await screen.findByRole("button", { name: "Provision" }));
+      const post = calls.find((c) => c.key === "POST /api/provision");
+      expect(post.body).toEqual({ repo: "nickbrett1/greenfield" });
+      expect(await screen.findByText(/provision nickbrett1\/greenfield/)).toBeInTheDocument();
+    } finally {
+      window.history.pushState({}, "", "/");
+    }
+  });
+
+  it("offers a top link that opens the provision picker in its own window", async () => {
+    stubRoutes([
+      { key: "GET /api/projects", body: { projects: [], window_titles: 0 } },
+      { key: "GET /api/status", body: STATUS },
+    ]);
     render(Page);
-    await fireEvent.click(await screen.findByRole("button", { name: /Provision a repo/ }));
-    await fireEvent.click(await screen.findByRole("button", { name: "Provision" }));
-    const post = calls.find((c) => c.key === "POST /api/provision");
-    expect(post.body).toEqual({ repo: "nickbrett1/greenfield" });
-    expect(await screen.findByText(/nickbrett1\/greenfield/)).toBeInTheDocument();
+    const link = await screen.findByRole("link", { name: "Provision a repo" });
+    expect(link).toHaveAttribute("href", "?provision=1");
+    expect(link).toHaveAttribute("target", "_blank");
+  });
+
+  it("opens the job view with a link to its own window", async () => {
+    vi.useFakeTimers();
+    try {
+      stubRoutes([
+        {
+          key: "GET /api/projects",
+          body: { projects: [project({ state: "absent", container: null })], window_titles: 0 },
+        },
+        { key: "GET /api/status", body: STATUS },
+        {
+          key: "POST /api/projects/acme/open",
+          status: 202,
+          body: { job_id: "j1", kind: "open", target: "acme", state: "running", log: [] },
+        },
+        {
+          key: "GET /api/jobs/j1",
+          body: { job_id: "j1", kind: "open", target: "acme", state: "running", log: ["Cloning acme"] },
+        },
+      ]);
+      render(Page);
+      await fireEvent.click(await screen.findByRole("button", { name: "Open" }));
+
+      // The log renders without waiting a full poll, and the job can be handed
+      // to its own browser window.
+      expect(await screen.findByText(/Cloning acme/)).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "New window" })).toHaveAttribute("href", "?job=j1");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("adopts a job named in the URL, so it can live in its own window", async () => {
+    window.history.pushState({}, "", "/?job=j9");
+    try {
+      stubRoutes([
+        { key: "GET /api/projects", body: { projects: [], window_titles: 0 } },
+        { key: "GET /api/status", body: STATUS },
+        {
+          key: "GET /api/jobs/j9",
+          body: { job_id: "j9", kind: "provision", target: "greenfield", state: "done", log: ["done here"] },
+        },
+      ]);
+      render(Page);
+
+      expect(await screen.findByText(/done here/)).toBeInTheDocument();
+      expect(screen.getByText("provision greenfield")).toBeInTheDocument();
+    } finally {
+      window.history.pushState({}, "", "/");
+    }
   });
 
   it("shows a listing error beside the picker rather than hiding it", async () => {
@@ -255,9 +323,56 @@ describe("the jobs a phone starts", () => {
         body: { repos: [], error: "no repositories returned (no GitHub token?)" },
       },
     ]);
+    window.history.pushState({}, "", "/?provision=1");
+    try {
+      render(Page);
+      expect(await screen.findByText(/no GitHub token/)).toBeInTheDocument();
+    } finally {
+      window.history.pushState({}, "", "/");
+    }
+  });
+});
+
+describe("reaching a running container", () => {
+  const connected = {
+    state: "connected",
+    host: "acme",
+    user: "vscode",
+    ip: "100.64.0.9",
+    ssh: "ssh vscode@acme",
+    blink: "blink://host/?host=acme&username=vscode&port=22",
+  };
+
+  it("shows the tailnet state and the ssh target", async () => {
+    stubAction(project({ state: "running", connection: connected }));
     render(Page);
-    await fireEvent.click(await screen.findByRole("button", { name: /Provision a repo/ }));
-    expect(await screen.findByText(/no GitHub token/)).toBeInTheDocument();
+
+    expect(await screen.findByText("tailnet")).toBeInTheDocument();
+    expect(screen.getByText("ssh vscode@acme")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Blink" })).not.toBeInTheDocument();
+  });
+
+  it("offers Register when the container is on tailscale but not registered", async () => {
+    const calls = stubAction(
+      project({ state: "running", connection: { ...connected, state: "logged_out", blink: null, ssh: null } }),
+      { name: "acme", started: true, url: "https://login.tailscale.com/a/x", detail: "authenticate" },
+    );
+    render(Page);
+
+    await fireEvent.click(await screen.findByRole("button", { name: "Register" }));
+
+    expect(calls).toEqual([{ url: "/api/projects/acme/tailscale", body: {} }]);
+    // The login URL is the whole point: the phone has to open it.
+    const link = await screen.findByRole("link", { name: /open login/ });
+    expect(link).toHaveAttribute("href", "https://login.tailscale.com/a/x");
+  });
+
+  it("says so when a container has no tailscale at all", async () => {
+    stubAction(project({ state: "running", connection: { ...connected, state: "absent", blink: null, ssh: null } }));
+    render(Page);
+
+    expect(await screen.findByText("no tailscale")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Register" })).not.toBeInTheDocument();
   });
 });
 

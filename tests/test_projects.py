@@ -195,6 +195,69 @@ def test_rows_carry_each_containers_memory(tmp_path, monkeypatch):
     }
 
 
+def test_rows_carry_the_connection_only_for_a_running_container(tmp_path, monkeypatch):
+    """How to reach a project is a fact about a *running* container; a stopped
+    one has no daemon to probe, so the row carries nothing to reach."""
+    for name in ("acme", "example-one"):
+        (tmp_path / name).mkdir()
+    monkeypatch.setattr(projects.reap_config, "load", _fake_reap_config(tmp_path))
+    monkeypatch.setattr(projects.containers, "list_devcontainers", lambda: [
+        {"id": "c1", "name": "acme-dev", "workspace": str(tmp_path / "acme"),
+         "running": True, "started_at": None},
+        {"id": "c2", "name": "example-one-dev", "workspace": str(tmp_path / "example-one"),
+         "running": False, "started_at": None},
+    ])
+    monkeypatch.setattr(projects.containers, "active_session", lambda cid: (False, ""))
+    monkeypatch.setattr(projects.vscode, "windows_for", lambda ws, process=None: (set(), None))
+    monkeypatch.setattr(projects.vscode, "list_window_titles", lambda process=None: ([], None))
+
+    conn = {"c1": {"state": "connected", "blink": "blink://host/?host=acme"}}
+    rows, _ = projects.rows(probe_builds=False, connections=conn)
+
+    assert {r["name"]: r["connection"] for r in rows} == {
+        "acme": conn["c1"], "example-one": None,
+    }
+
+
+def test_connections_probes_every_running_container(tmp_path, monkeypatch):
+    """In parallel, and once each: the probe is a `docker exec` per container."""
+    monkeypatch.setattr(projects.reap_config, "load", _fake_reap_config(tmp_path))
+    monkeypatch.setattr(projects.containers, "list_devcontainers", lambda: [
+        {"id": f"c{i}", "name": f"n{i}-dev", "workspace": f"/w/n{i}",
+         "running": i % 2 == 0, "started_at": None} for i in range(4)
+    ])
+    probed = []
+
+    def fake_connection(cid, workspace, host=None):
+        probed.append((cid, workspace))
+        return {"state": "connected"}
+
+    monkeypatch.setattr(projects.tailnet, "connection", fake_connection)
+
+    conns = projects.connections()
+
+    assert sorted(probed) == [("c0", "/w/n0"), ("c2", "/w/n2")]
+    assert set(conns) == {"c0", "c2"}
+
+
+def test_rows_have_no_connection_when_no_probe_was_paid_for(tmp_path, monkeypatch):
+    (tmp_path / "acme").mkdir()
+    monkeypatch.setattr(projects.reap_config, "load", _fake_reap_config(tmp_path))
+    monkeypatch.setattr(projects.containers, "list_devcontainers", lambda: [
+        {"id": "c1", "name": "acme-dev", "workspace": str(tmp_path / "acme"),
+         "running": True, "started_at": None},
+    ])
+    monkeypatch.setattr(projects.containers, "active_session", lambda cid: (False, ""))
+    monkeypatch.setattr(projects.vscode, "windows_for", lambda ws, process=None: (set(), None))
+    monkeypatch.setattr(projects.vscode, "list_window_titles", lambda process=None: ([], None))
+    monkeypatch.setattr(projects.tailnet, "connection",
+                        lambda *a, **k: pytest.fail("no probe was asked for"))
+
+    rows, _ = projects.rows(probe_builds=False)
+
+    assert [r["connection"] for r in rows] == [None]
+
+
 def test_rows_have_no_memory_when_no_sample_was_paid_for(tmp_path, monkeypatch):
     """A caller that did not ask for a sample gets no column, rather than a
     hidden two-second docker read inside what looks like a pure join."""

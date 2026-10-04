@@ -198,6 +198,30 @@ def test_open_turns_a_devopen_failure_into_an_action_error(rows, monkeypatch):
     assert "git clone" in str(excinfo.value)
 
 
+# -- tailscale registration --------------------------------------------------
+
+
+def test_register_tailscale_starts_a_detached_up_and_returns_the_url(rows, monkeypatch):
+    """The registration a server *can* drive: started detached inside the
+    container, answering with the login URL the phone opens."""
+    seen = {}
+    monkeypatch.setattr(actions.tailnet, "register",
+                        lambda cid, host: seen.update(cid=cid, host=host) or {
+                            "started": True, "url": "https://login.tailscale.com/a/x",
+                            "detail": "authenticate"})
+    out = actions.register_tailscale("acme")
+    assert seen == {"cid": "acme-dev", "host": "acme"}
+    assert out == {"name": "acme", "started": True,
+                   "url": "https://login.tailscale.com/a/x", "detail": "authenticate"}
+
+
+def test_register_tailscale_refuses_a_container_that_is_not_running(rows):
+    rows["row"] = _row(state="stopped")
+    with pytest.raises(actions.ActionError) as excinfo:
+        actions.register_tailscale("acme")
+    assert "not running" in str(excinfo.value)
+
+
 # -- provision ---------------------------------------------------------------
 
 

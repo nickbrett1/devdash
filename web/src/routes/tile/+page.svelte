@@ -15,19 +15,12 @@
 	const REFRESH_MS = 15_000;
 
 	let status = $state(null);
-	let windowTitles = $state(null);
-	let windowError = $state('');
-	let screenLocked = $state(false);
 
 	async function load() {
 		try {
-			const [s, p] = await Promise.all([fetch('/api/status'), fetch('/api/projects')]);
-			if (!s.ok || !p.ok) return;
+			const s = await fetch('/api/status');
+			if (!s.ok) return;
 			status = await s.json();
-			const body = await p.json();
-			windowTitles = typeof body.window_titles === 'number' ? body.window_titles : null;
-			windowError = body.window_error || '';
-			screenLocked = !!body.screen_locked;
 		} catch {
 			// Keep the last good numbers rather than blanking the tile: the
 			// dashboard shows the previous sample until the next poll.
@@ -47,7 +40,7 @@
 </svelte:head>
 
 {#if status}
-	<StatusStrip {status} {windowTitles} {windowError} {screenLocked} />
+	<StatusStrip {status} />
 {:else}
 	<p class="wait">…</p>
 {/if}

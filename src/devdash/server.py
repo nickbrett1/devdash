@@ -102,7 +102,8 @@ class Handler(SimpleHTTPRequestHandler):
 
         try:
             if path == "/api/projects":
-                rows, meta = projects.rows(memory=projects.memory())
+                rows, meta = projects.rows(memory=projects.memory(),
+                                           connections=projects.connections())
                 self._send_json({"projects": rows, **meta})
                 return
             if path == "/api/status":
@@ -145,6 +146,18 @@ class Handler(SimpleHTTPRequestHandler):
                 # The container list and the stats sample are cached for the
                 # read endpoints; the phone reloads the moment this returns and
                 # must not be shown the state it just changed.
+                projects.invalidate()
+                self._send_json(result)
+                return
+
+            # /api/projects/<name>/tailscale — start registering a running
+            # container and answer with the login URL. Detached inside the
+            # container, so this returns in the time it takes the URL to print,
+            # not the time it takes a human to open it.
+            if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "tailscale":
+                result = actions.register_tailscale(parts[2])
+                # The connection sample is cached; the phone reloads the moment
+                # this returns to show the state it is about to change.
                 projects.invalidate()
                 self._send_json(result)
                 return
@@ -206,6 +219,25 @@ class Handler(SimpleHTTPRequestHandler):
         except (ValueError, UnicodeDecodeError):
             return {}
         return data if isinstance(data, dict) else {}
+
+    def end_headers(self):
+        """Attach a Cache-Control to every response, decided by URL.
+
+        SvelteKit puts a content hash in each asset name under
+        /_app/immutable/, so a URL there is the same bytes for good: cache it
+        hard. Everything else — index.html, tile.html, the manifest — keeps its
+        name across builds, so it must be revalidated. Without this the phone
+        (and the NAS dashboard's iframe) keeps rendering the previous build out
+        of its own cache after a deploy, which reads as "the change didn't
+        land". `_send_json` sets its own no-store first; respect it rather than
+        emitting a second header.
+        """
+        if not any(b"Cache-Control" in h for h in self._headers_buffer):
+            if urlparse(self.path).path.startswith("/_app/immutable/"):
+                self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+            else:
+                self.send_header("Cache-Control", "no-cache")
+        super().end_headers()
 
     def _serve_static(self):
         if self.root is None or not self.root.is_dir():

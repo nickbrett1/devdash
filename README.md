@@ -177,7 +177,7 @@ the *interpreter* — specifically to `realpath(sys.executable)`. That Homebrew
 the same binary, so the grant carries over. A venv on any other Python gets a
 fresh prompt for an interpreter you did not mean to bless.
 
-### A window count of 0 usually means the screen is locked
+### A window list of 0 usually means the screen is locked
 
 Not a permission problem — that was the first conclusion drawn here and it was
 wrong. Measured with the display awake, the venv python under `gui/501`:
@@ -193,13 +193,15 @@ the screen is locked or asleep**, exactly as it does when no window is open.
 (`screencapture` fails with "could not create image from display" in the same
 state, which is how the two cases were told apart.)
 
-That ambiguity is why `/api/projects` carries the raw `window_titles` count
-next to the per-project `window_open` flags — and why it also carries
-`screen_locked`, read straight from `ioreg -n Root -d1`
-(`CGSSessionScreenIsLocked` / `IOConsoleLocked`, ~50 ms). The count alone
-cannot tell "nothing is open" from "nobody can see the screen"; the probe can,
-so the strip says **windows hidden — screen locked** instead of showing a
-confident `0` after an Open that actually worked.
+The page no longer shows a window *count* — work happens over SSH inside the
+container, so how many VS Code windows System Events can see says nothing
+useful. But the ambiguity still matters, because the per-project `window_open`
+flag is what decides whether a running row offers `Open` at all. So
+`/api/projects` carries `screen_locked` beside it, read straight from
+`ioreg -n Root -d1` (`CGSSessionScreenIsLocked` / `IOConsoleLocked`, ~50 ms):
+the window list alone cannot tell "nothing is open" from "nobody can see the
+screen", and the probe can. While the screen is locked, `Open` is withheld from
+every *running* row rather than guessed.
 
 M2's Close is still best-effort, but for the ordinary reason — a "save your
 changes?" sheet can block a close — not because the LaunchAgent cannot see
@@ -226,11 +228,20 @@ Read-only, GET:
 | Route | Answer |
 | --- | --- |
 | `/healthz` | `{"status":"ok"}` |
-| `/api/projects` | the joined rows — running, then stopped, then absent, each by name — plus `window_error`, `window_titles` and `screen_locked`. Each row carries `mem_bytes`, the memory that container is using (null when it is not running) |
+| `/api/projects` | the joined rows — running, then stopped, then absent, each by name — plus `window_error`, `window_titles` and `screen_locked`. Each row carries `mem_bytes`, the memory that container is using (null when it is not running), and `connection`, how to reach a running container on the tailnet (null otherwise) |
 | `/api/status` | VM memory, the devcontainer footprint, and how many devcontainers are running versus how many exist. Both counts are over the devcontainers, so `running_count <= container_count`: `docker stats` sees unrelated containers too, and counting those once made "running" exceed the total |
 | `/api/repos` | repos with no workspace here yet, plus a listing error if any |
 | `/api/jobs/<id>` | one job's state and log |
 | `/api/jobs` | the jobs still running |
+
+Everything else is the SvelteKit build from `web/dist`. Static responses carry a
+`Cache-Control` chosen by URL: an asset under `/_app/immutable/` has a content
+hash in its name and never changes under that URL, so it is cached hard
+(`max-age=31536000, immutable`); `index.html`, `tile.html` and the manifest keep
+their names across builds, so they are `no-cache` and get revalidated. Without
+that split the phone — and the NAS dashboard's iframe — would keep rendering the
+previous build out of its own cache after a deploy, which reads as "the change
+didn't land".
 
 Mutating, POST only — a prefetcher or a back button must not be able to stop a
 container, so no action is reachable by GET:
@@ -255,6 +266,23 @@ sheet can keep the window open while the RAM is reclaimed either way.
 
 `close` also means "stop", never "remove": `docker stop` keeps the container
 and its volumes, so `Open` brings the same container straight back.
+
+`tailscale` starts registering a running container on the tailnet and answers
+with the login URL:
+
+```bash
+curl -X POST "http://<tailnet-ip>:3990/api/projects/<name>/tailscale"
+# {"name":"acme","started":true,
+#  "url":"https://login.tailscale.com/a/xxxx","detail":"authenticate to finish"}
+```
+
+This is the step devopen can only take non-interactively with an authkey: bare
+`tailscale up` prints a login URL and then *blocks* until a browser completes
+the flow, which a server cannot do. So devdash runs it **detached inside the
+container** instead — the URL lands in a file, the process keeps waiting, and
+the phone opens the URL. Authentication then finishes on its own and the next
+poll reads the container as connected. A container that is already registered
+answers `{"started": false, "detail": "… already registered"}`.
 
 ### Which button a row offers
 
@@ -341,6 +369,31 @@ devopen's config carries an authkey, and leaves `fresh`/`clean` off unless the
 body asks for them: every one of devopen's prompts is a question a server
 cannot answer, so it is a parameter with a safe default instead.
 
+When there is no authkey, the registration is not skipped silently: the new
+container's row appears with its `connection`, saying whether it is on the
+tailnet, and offering the `tailscale` action when it is not.
+
+### Reaching a container
+
+A running container's row carries a `connection` read from the container's own
+tailscale state — one `docker exec` per running container, sampled like the
+others so a poll is a join rather than a probe:
+
+```json
+{"state": "connected", "host": "acme", "user": "vscode",
+ "ip": "100.97.165.122", "ssh": "ssh vscode@acme",
+ "blink": "blink://host/?host=acme&username=vscode&port=22"}
+```
+
+`host` is the MagicDNS name devopen registers the container under (the workspace
+basename), `user` is `remoteUser` from the devcontainer config, and `blink` is
+the same `blink://` deep link devopen prints — rebuilt here from the container's
+own facts, so it exists whether or not this particular `open` printed one. `ssh`
+prefers the stable name over the IP, which changes on a re-register. `state` is
+`connected`, `logged_out` (tailscale present, not registered — the row offers
+`Register`) or `absent` (no tailscale in this container; the build simply has
+none).
+
 ### Why the first load is the slow one
 
 The two read endpoints are joins over reads that are individually slow and
@@ -377,15 +430,26 @@ apple-touch icon in `web/static`), pulls to refresh, and keeps every control at
 the 44 px minimum. The manifest is fetched same-origin, so `start_url: "/"`
 keeps the installed app pointed at the same tailnet URL you opened.
 
-There was a **Blink** link on each running project. It never worked, so it is
-gone: what the phone needs is the container's MagicDNS name, and that is
-devopen's to register, not a URL for devdash to guess at.
+A running project's row carries its tailnet state and, when it is on the
+tailnet, an **ssh** target and a **Blink** link. An earlier Blink link guessed
+at the host and never worked; this one is built from the container's own
+tailscale state and `remoteUser`, so it is the same link devopen would print —
+and it exists even for a container registered on some earlier run. When a
+container has tailscale but is not registered, the row offers `Register`, which
+answers with the login URL to open from the phone.
 
-That is why `open` registers Tailscale when devopen's config carries an
-authkey: reaching a project from the phone is most of the point of opening it
-from the phone — ssh, a terminal app or VS Code all need a name to aim at — and
-`tailscale up` without a key wants a browser a server cannot provide. No key
-means silence, not a hang.
+That is also why `open` itself registers Tailscale when devopen's config
+carries an authkey: reaching a project from the phone is most of the point of
+opening it from the phone — ssh, a terminal app or VS Code all need a name to
+aim at — and `tailscale up` without a key wants a browser a server cannot
+provide. No key means the row says so, not a hang.
+
+When `open` or `provision` starts a job, the log opens as its own full-screen
+view (a `New window` link hands it to its own browser tab, `?job=<id>`), and it
+**follows its tail**: newest line on screen, until you scroll up to read back,
+which stops the follow until you return to the bottom. The first build is
+minutes of output and was previously a small box below the project list, which
+on a phone meant scrolling to find it and again to keep up.
 
 There are no CLI shims here. `devdash` is a server, installed as a LaunchAgent
 (`install.py`), so there is nothing for a `pip install` to shadow.

@@ -13,11 +13,9 @@
 
 	let projects = $state([]);
 	let status = $state(null);
-	let windowTitles = $state(null);
-	let windowError = $state('');
 	// While the Mac's screen is locked, System Events reports every process
-	// with zero windows and no error, so `windowTitles` is not a fact. The
-	// strip says so instead of showing a confident "0".
+	// with zero windows and no error, so a running project's `window_open` flag
+	// is not a fact. Open is still hidden for a running container then.
 	let screenLocked = $state(false);
 
 	// Open puts a window on the Mac, so the only thing it can get wrong is
@@ -46,6 +44,46 @@
 	// is polled from there.
 	let job = $state(null);
 	let pollTimer = null;
+	// The job log opens as its own full-screen view (a "window" the phone can
+	// live in while a build runs) and follows its tail unless the reader has
+	// scrolled up — then it stays where they put it until they come back down.
+	// `logEl` is the scrolling element; the effect below runs as lines arrive.
+	let logEl = $state(null);
+	let following = $state(true);
+
+	$effect(() => {
+		const length = job?.log?.length ?? 0;
+		if (!length || !following || !logEl) return;
+		// After the DOM has the new lines — a microtask is enough, and it is
+		// available whether or not the page is animating. Guarded: the view may
+		// have been dismissed between the effect and the microtask.
+		queueMicrotask(() => {
+			if (logEl) logEl.scrollTop = logEl.scrollHeight;
+		});
+	});
+
+	function onLogScroll() {
+		if (!logEl) return;
+		// 48px of slack: a finger lifting near the bottom should not stop the
+		// follow, only a deliberate scroll up should.
+		following = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 48;
+	}
+
+	// A job can be opened in its own browser window (`?job=<id>`); read that id
+	// and adopt it so the new window polls the same job. Guarded for the
+	// prerender, where there is no window.
+	function initialJobId() {
+		if (typeof window === 'undefined') return null;
+		return new URLSearchParams(window.location.search).get('job');
+	}
+
+	// The Provision picker opens in its own browser window (`?provision=1`), the
+	// way a job does, so a phone gets a dedicated screen instead of a disclosure
+	// at the foot of the list. Guarded for the prerender, where there is no window.
+	function initialProvision() {
+		if (typeof window === 'undefined') return false;
+		return new URLSearchParams(window.location.search).get('provision') === '1';
+	}
 
 	// The Provision picker. `repos === null` means "not asked yet", which is
 	// deliberately distinct from "asked and got nothing".
@@ -70,8 +108,6 @@
 			}
 			const body = await p.json();
 			projects = body.projects || [];
-			windowTitles = typeof body.window_titles === 'number' ? body.window_titles : null;
-			windowError = body.window_error || '';
 			screenLocked = !!body.screen_locked;
 			status = await s.json();
 			error = '';
@@ -86,6 +122,16 @@
 	onMount(() => {
 		load();
 		const timer = setInterval(load, REFRESH_MS);
+		const id = initialJobId();
+		if (id) {
+			following = true;
+			job = { job_id: id, kind: 'job', target: '', state: 'running', log: [] };
+			pollJob();
+		}
+		if (initialProvision()) {
+			pickerOpen = true;
+			if (repos === null) fetchRepos();
+		}
 		return () => {
 			clearInterval(timer);
 			stopPolling();
@@ -110,18 +156,21 @@
 				// 409 is the ordinary "already running" answer and carries the
 				// job id of the job in the way; either way the message is the
 				// server's to write.
+				following = true;
 				job = { state: 'failed', target, error: data.error || `HTTP ${res.status}`, log: [] };
 				return;
 			}
+			following = true;
 			job = data;
 			pollJob();
 		} catch (e) {
+			following = true;
 			job = { state: 'failed', target, error: `Could not reach devdash: ${e}`, log: [] };
 		}
 	}
 
 	function pollJob() {
-		pollTimer = setInterval(async () => {
+		const tick = async () => {
 			try {
 				const res = await fetch(`/api/jobs/${job.job_id}`, { credentials: 'same-origin' });
 				if (!res.ok) return;
@@ -133,7 +182,12 @@
 				stopPolling();
 				load();
 			}
-		}, JOB_POLL_MS);
+		};
+		// Poll immediately as well as on the interval: the first line of output
+		// should not wait a whole second, and a job named in the URL should show
+		// its log the moment the window opens.
+		tick();
+		pollTimer = setInterval(tick, JOB_POLL_MS);
 	}
 
 	function stopPolling() {
@@ -141,9 +195,38 @@
 		pollTimer = null;
 	}
 
-	async function loadRepos() {
-		pickerOpen = !pickerOpen;
-		if (!pickerOpen || repos !== null) return;
+	// Register a running container on the tailnet. The server starts
+	// `tailscale up` detached and answers with the login URL, which the phone
+	// opens — the one step a server cannot complete on its own.
+	async function register(name) {
+		busy = { ...busy, [name]: 'tailscale' };
+		note = { ...note, [name]: null };
+		try {
+			const res = await fetch(`/api/projects/${encodeURIComponent(name)}/tailscale`, {
+				method: 'POST',
+				credentials: 'same-origin',
+				headers: { 'Content-Type': 'application/json' },
+				body: '{}'
+			});
+			const body = await res.json().catch(() => ({}));
+			if (res.status === 401) {
+				error = AUTH;
+				return;
+			}
+			if (!res.ok) {
+				note = { ...note, [name]: { ok: false, text: body.error || `HTTP ${res.status}` } };
+				return;
+			}
+			note = { ...note, [name]: { ok: true, text: body.detail || 'registration started', url: body.url || null } };
+			await load();
+		} catch (e) {
+			note = { ...note, [name]: { ok: false, text: `Could not reach devdash: ${e}` } };
+		} finally {
+			busy = { ...busy, [name]: null };
+		}
+	}
+
+	async function fetchRepos() {
 		try {
 			const res = await fetch('/api/repos', { credentials: 'same-origin' });
 			const data = await res.json().catch(() => ({}));
@@ -282,12 +365,14 @@
 		</div>
 	</header>
 
+	<a class="provision-top" href="?provision=1" target="_blank" rel="noopener">Provision a repo</a>
+
 	{#if error}
 		<p class="error" role="alert">{error}</p>
 	{/if}
 
 	{#if status}
-		<div class="strip-slot"><StatusStrip {status} {windowTitles} {windowError} {screenLocked} /></div>
+		<div class="strip-slot"><StatusStrip {status} /></div>
 	{/if}
 
 	{#if loading && projects.length === 0}
@@ -323,6 +408,31 @@
 							<span class="badge muted-badge">no human build</span>
 						{/if}
 					</div>
+
+					<!-- How to reach a running container: its tailnet state and the
+					     ssh target. This is the step devopen skips when there is no
+					     authkey, surfaced where the phone can use it. -->
+					{#if p.connection}
+						<div class="conn">
+							{#if p.connection.state === 'connected'}
+								<span class="badge tailnet" title="on the tailnet as {p.connection.host}">tailnet</span>
+								{#if p.connection.ssh}
+									<code class="ssh">{p.connection.ssh}</code>
+								{/if}
+							{:else if p.connection.state === 'logged_out'}
+								<span class="badge warn-badge" title="the container has tailscale but is not registered">not on tailnet</span>
+								<button
+									class="pill register"
+									disabled={!!busy[p.name]}
+									onclick={() => register(p.name)}
+								>
+									{busy[p.name] === 'tailscale' ? 'Registering…' : 'Register'}
+								</button>
+							{:else}
+								<span class="badge muted-badge">no tailscale</span>
+							{/if}
+						</div>
+					{/if}
 
 					<div class="actions">
 						{#if p.state === 'absent'}
@@ -363,69 +473,96 @@
 						{/if}
 					</div>
 					{#if note[p.name]}
-						<p class="note" class:bad={!note[p.name].ok} role="status">{note[p.name].text}</p>
+						<p class="note" class:bad={!note[p.name].ok} role="status">
+							{note[p.name].text}
+							{#if note[p.name].url}
+								<a class="login-link" href={note[p.name].url} target="_blank" rel="noopener">
+									open login ↗
+								</a>
+							{/if}
+						</p>
 					{/if}
 				</li>
 			{/each}
 		</ul>
 	{/if}
 
-	{#if job}
-		<section class="job" class:bad={job.state === 'failed'}>
-			<div class="job-head">
-				<strong>{job.kind || 'job'} {job.target}</strong>
-				<span class="state" class:running={job.state === 'done'} class:stopped={job.state === 'running'}>
-					{job.state}
-				</span>
-			</div>
-			{#if job.error}
-				<p class="note bad">{job.error}</p>
+</main>
+
+<!-- The Provision picker opens in its own browser window (`?provision=1`), the
+     way a job does, so there is a dedicated screen for it on a phone rather than
+     a disclosure at the foot of the list. It sits below the job view in z-order:
+     starting a provision closes it and the build log takes the screen. -->
+{#if pickerOpen}
+	<section class="provision-view" aria-label="Provision a repo">
+		<div class="job-head">
+			<strong>Provision a repo</strong>
+			<button onclick={() => (pickerOpen = false)}>Close</button>
+		</div>
+		{#if reposError}
+			<p class="note bad">{reposError}</p>
+		{/if}
+		{#if repos === null}
+			<p class="muted">Loading repositories…</p>
+		{:else}
+			<input type="search" bind:value={repoFilter} placeholder="Filter repositories…" />
+			{#if filteredRepos.length === 0}
+				<p class="muted">Nothing here that has no workspace yet.</p>
+			{:else}
+				<ul class="repos">
+					{#each filteredRepos as r (r)}
+						<li>
+							<span class="repo-name">{r}</span>
+							<button
+								disabled={isRunning(r)}
+								onclick={() => {
+									pickerOpen = false;
+									startJob('/api/provision', { repo: r }, r);
+								}}
+							>
+								{isRunning(r) ? 'Cloning…' : 'Provision'}
+							</button>
+						</li>
+					{/each}
+				</ul>
 			{/if}
-			{#if job.state === 'running'}
-				<p class="note">Running — a first container build takes minutes. The log updates once a second.</p>
-			{/if}
-			{#if job.log && job.log.length}
-				<pre>{job.log.join('\n')}</pre>
+		{/if}
+	</section>
+{/if}
+
+<!-- The job is a sibling of <main>, not a child: it is a full-screen view, so
+     it must not inherit main's pull-to-refresh touch handlers (a drag on the
+     log would otherwise read as a pull), and it takes the whole screen for
+     minutes at a time. -->
+{#if job}
+	<section class="job" class:bad={job.state === 'failed'} aria-label="Job output">
+		<div class="job-head">
+			<strong>{job.kind || 'job'} {job.target}</strong>
+			<span class="state" class:running={job.state === 'done'} class:stopped={job.state === 'running'}>
+				{job.state}
+			</span>
+		</div>
+		{#if job.error}
+			<p class="note bad">{job.error}</p>
+		{/if}
+		{#if job.state === 'running'}
+			<p class="note">Running — a first container build takes minutes. The log follows the tail; scroll up to read back.</p>
+		{/if}
+		{#if job.log && job.log.length}
+			<pre bind:this={logEl} onscroll={onLogScroll}>{job.log.join('\n')}</pre>
+		{:else}
+			<p class="muted">Waiting for output…</p>
+		{/if}
+		<div class="job-actions">
+			{#if job.job_id}
+				<a class="btn" href={`?job=${job.job_id}`} target="_blank" rel="noopener">New window</a>
 			{/if}
 			{#if job.state !== 'running'}
 				<button onclick={() => (job = null)}>Dismiss</button>
 			{/if}
-		</section>
-	{/if}
-
-	<section class="provision">
-		<button class="disclose" aria-expanded={pickerOpen} onclick={loadRepos}>
-			{pickerOpen ? '▾' : '▸'} Provision a repo
-		</button>
-		{#if pickerOpen}
-			{#if reposError}
-				<p class="note bad">{reposError}</p>
-			{/if}
-			{#if repos === null}
-				<p class="muted">Loading repositories…</p>
-			{:else}
-				<input type="search" bind:value={repoFilter} placeholder="Filter repositories…" />
-				{#if filteredRepos.length === 0}
-					<p class="muted">Nothing here that has no workspace yet.</p>
-				{:else}
-					<ul class="repos">
-						{#each filteredRepos as r (r)}
-							<li>
-								<span class="repo-name">{r}</span>
-								<button
-									disabled={isRunning(r)}
-									onclick={() => startJob('/api/provision', { repo: r }, r)}
-								>
-									{isRunning(r) ? 'Cloning…' : 'Provision'}
-								</button>
-							</li>
-						{/each}
-					</ul>
-				{/if}
-			{/if}
-		{/if}
+		</div>
 	</section>
-</main>
+{/if}
 
 <style>
 	:global(body) {
@@ -433,11 +570,15 @@
 		font: 16px/1.4 -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
 		background: #0f172a;
 		color: #e2e8f0;
+		/* iOS Safari inflates text in landscape otherwise; the sizes here are
+		   already chosen for a phone. */
+		-webkit-text-size-adjust: 100%;
 	}
 	main {
 		max-width: 42rem;
 		margin: 0 auto;
 		padding: 1rem;
+		padding-bottom: calc(1rem + env(safe-area-inset-bottom));
 	}
 	header {
 		display: flex;
@@ -559,6 +700,61 @@
 	.badge.muted-badge {
 		color: #6b7280;
 	}
+	.badge.tailnet {
+		background: #10241f;
+		color: #34d399;
+	}
+	.badge.warn-badge {
+		background: #3a2f10;
+		color: #f0c14b;
+	}
+	/* How to reach a running container. Kept on its own line under the badges
+	   so the ssh target can be long without shoving the state pill around. */
+	.conn {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.35rem;
+		margin-top: 0.4rem;
+	}
+	.pill {
+		display: inline-flex;
+		align-items: center;
+		font-size: 0.78rem;
+		line-height: 1;
+		padding: 0.45rem 0.7rem;
+		min-height: 2.25rem;
+		border-radius: 0.5rem;
+		border: 1px solid #3b4152;
+		background: #1f2534;
+		color: #e2e8f0;
+		text-decoration: none;
+	}
+	.pill.register {
+		border: 1px solid #7f6d2d;
+		background: #2c2610;
+		color: #f0c14b;
+	}
+	.ssh {
+		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+		font-size: 0.75rem;
+		padding: 0.3rem 0.45rem;
+		border-radius: 0.4rem;
+		background: #0b0e17;
+		color: #cbd5e1;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		max-width: 100%;
+		/* Selectable: over plain http (the tailnet) there is no clipboard API,
+		   so a long-press select is how this gets copied on a phone. */
+		user-select: all;
+		-webkit-user-select: all;
+	}
+	.login-link {
+		margin-left: 0.4rem;
+		color: #93c5fd;
+	}
 	.strip-slot {
 		margin-bottom: 1rem;
 	}
@@ -600,15 +796,23 @@
 		font-size: 0.8rem;
 		color: #94a3b8;
 	}
+	/* The job view takes the whole screen: a first build is minutes of output
+	   and the phone has nothing else to do, so it gets the room rather than
+	   being a box below the project list that has to be scrolled to. */
 	.job {
-		margin-top: 1rem;
+		position: fixed;
+		inset: 0;
+		z-index: 50;
+		margin: 0;
+		display: flex;
+		flex-direction: column;
 		background: #161923;
-		border: 1px solid #3b4152;
-		border-radius: 0.75rem;
-		padding: 0.9rem 1rem;
+		border: none;
+		border-radius: 0;
+		padding: calc(0.9rem + env(safe-area-inset-top)) 1rem
+			calc(0.9rem + env(safe-area-inset-bottom));
 	}
 	.job.bad {
-		border-color: #7f2d2d;
 		background: #3a1518;
 	}
 	.job-head {
@@ -616,28 +820,70 @@
 		align-items: baseline;
 		justify-content: space-between;
 		gap: 0.5rem;
+		flex: 0 0 auto;
 	}
 	.job pre {
+		flex: 1 1 auto;
+		min-height: 6rem;
 		margin: 0.6rem 0 0;
 		padding: 0.6rem;
-		max-height: 18rem;
 		overflow: auto;
 		background: #0b0e17;
 		color: #e2e8f0;
 		border-radius: 0.5rem;
-		font-size: 0.75rem;
-		line-height: 1.35;
+		font-size: 0.8rem;
+		line-height: 1.4;
 		white-space: pre-wrap;
 		word-break: break-word;
+		overscroll-behavior: contain;
+		-webkit-overflow-scrolling: touch;
 	}
-	.provision {
-		margin-top: 1rem;
+	.job-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+		margin-top: 0.6rem;
+		flex: 0 0 auto;
 	}
-	.disclose {
-		width: 100%;
-		text-align: left;
-		font-size: 0.95rem;
+	.job-actions .btn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 4.5rem;
+		min-height: 2.75rem;
 		padding: 0 0.9rem;
+		font-size: 0.95rem;
+		border: 1px solid #3b4152;
+		background: #161923;
+		color: inherit;
+		border-radius: 0.6rem;
+		text-decoration: none;
+	}
+	.provision-top {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 100%;
+		min-height: 2.75rem;
+		margin-bottom: 0.75rem;
+		padding: 0 0.9rem;
+		font-size: 0.95rem;
+		border: 1px solid #3b4152;
+		background: #161923;
+		color: inherit;
+		border-radius: 0.6rem;
+		text-decoration: none;
+	}
+	.provision-view {
+		position: fixed;
+		inset: 0;
+		z-index: 40;
+		display: flex;
+		flex-direction: column;
+		margin: 0;
+		padding: calc(0.9rem + env(safe-area-inset-top)) 1rem calc(0.9rem + env(safe-area-inset-bottom));
+		background: #161923;
+		overflow: auto;
 	}
 	input[type='search'] {
 		width: 100%;

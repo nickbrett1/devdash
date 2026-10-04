@@ -2,9 +2,9 @@
 	// The status strip, shared by the full page and the /tile embed.
 	//
 	// It lives in its own component because the NAS dashboard iframes it: two
-	// copies of the same four figures and the same meter would drift, and the
+	// copies of the same figures and the same meter would drift, and the
 	// dashboard would quietly start disagreeing with the page.
-	let { status, windowTitles = null, windowError = '', screenLocked = false } = $props();
+	let { status } = $props();
 
 	function bytes(n) {
 		if (n === null || n === undefined) return '—';
@@ -45,19 +45,6 @@
 		<div class="figure">
 			<span class="n">{status.container_count}</span>
 			<span class="k">containers</span>
-		</div>
-		<div class="figure">
-			<span class="n">{screenLocked ? '?' : (windowTitles ?? '—')}</span>
-			{#if screenLocked}
-				<span
-					class="k locked"
-					title="The Mac's screen is locked. While it is, System Events reports zero windows for every app without an error, so the window count cannot be trusted."
-				>
-					windows hidden — screen locked
-				</span>
-			{:else}
-				<span class="k" title={windowError || 'windows System Events can see'}>vscode windows</span>
-			{/if}
 		</div>
 	</div>
 </section>
@@ -105,10 +92,5 @@
 	.figure .k {
 		font-size: 0.72rem;
 		color: #94a3b8;
-	}
-	/* Not an error — the page is fine — just a figure that cannot be read as
-	   fact right now. Amber sets it apart from the ordinary grey labels. */
-	.figure .k.locked {
-		color: #f0c14b;
 	}
 </style>

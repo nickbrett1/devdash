@@ -32,6 +32,10 @@ def live(monkeypatch):
     monkeypatch.setattr(projects, "rows",
                         lambda **kw: ([{"name": "acme"}], {"window_error": None, "window_titles": 1}))
     monkeypatch.setattr(projects, "status", lambda: {"vm_mem_total": 1})
+    # The connection probe and the stats sample are real `docker` calls; this is
+    # not the test for them.
+    monkeypatch.setattr(projects, "connections", dict)
+    monkeypatch.setattr(projects, "memory", dict)
     # serve() warms the read caches in a thread; that is real docker, and this
     # is not the test for it.
     monkeypatch.setattr(projects, "warm", lambda: None)
@@ -128,6 +132,30 @@ def test_a_close_drops_the_cached_samples(live, monkeypatch):
     monkeypatch.setattr(projects, "invalidate", lambda: dropped.append(1))
 
     post(live, "/api/projects/acme/close")
+
+    assert dropped == [1]
+
+
+def test_tailscale_registration_posts_through_and_answers_with_the_url(live, monkeypatch):
+    """The registration is the step devopen cannot take without an authkey, so
+    the answer is the login URL the phone opens — not a job id."""
+    seen = {}
+    monkeypatch.setattr(actions, "register_tailscale",
+                        lambda name: seen.update(name=name) or {
+                            "name": name, "started": True,
+                            "url": "https://login.tailscale.com/a/x", "detail": "authenticate"})
+    status, _, body = post(live, "/api/projects/acme/tailscale")
+    assert status == 200
+    assert seen == {"name": "acme"}
+    assert json.loads(body)["url"].startswith("https://login.tailscale.com/")
+
+
+def test_a_tailscale_registration_drops_the_cached_samples(live, monkeypatch):
+    monkeypatch.setattr(actions, "register_tailscale", lambda name: {"name": name})
+    dropped = []
+    monkeypatch.setattr(projects, "invalidate", lambda: dropped.append(1))
+
+    post(live, "/api/projects/acme/tailscale")
 
     assert dropped == [1]
 
@@ -316,11 +344,13 @@ def test_unknown_routes_are_404(live):
     assert post(live, "/api/projects", None)[0] == 404
 
 
-def test_projects_carries_the_memory_sample_to_the_rows(live, monkeypatch):
-    """The per-row figures come from the same stats sample the strip shows, so
-    the route has to hand it to the join."""
+def test_projects_carries_the_samples_to_the_rows(live, monkeypatch):
+    """The per-row figures come from the same stats sample the strip shows, and
+    the connection facts from the tailnet probe, so the route has to hand both
+    to the join rather than making the join pay for them per row."""
     seen = {}
     monkeypatch.setattr(projects, "memory", lambda: {"c1": 42})
+    monkeypatch.setattr(projects, "connections", lambda: {"c1": {"state": "connected"}})
     monkeypatch.setattr(projects, "rows",
                         lambda **kw: (seen.update(kw) or [{"name": "acme"}], {"window_titles": 1}))
 
@@ -328,6 +358,7 @@ def test_projects_carries_the_memory_sample_to_the_rows(live, monkeypatch):
 
     assert status == 200
     assert seen["memory"] == {"c1": 42}
+    assert seen["connections"] == {"c1": {"state": "connected"}}
 
 
 def test_a_broken_join_is_a_500_not_a_dead_server(live, monkeypatch):
