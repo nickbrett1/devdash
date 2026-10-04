@@ -36,7 +36,9 @@ steps:
       queue: mac-studio-linux
     plugins:
       - docker#v5.13.0:
-          image: "python:3.13-slim"
+          # Not slim: devopen and devreap are git dependencies, and the slim
+          # image has no git, so pip cannot resolve them. bookworm carries it.
+          image: "python:3.13-bookworm"
           # The fleet is Apple silicon. Without this, docker resolves a
           # multi-arch tag to linux/amd64 and runs the whole step emulated (with
           # a warning, and native modules built for the wrong architecture).
