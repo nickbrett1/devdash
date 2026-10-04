@@ -1,5 +1,6 @@
 {
   "name": "devdash",
+  "remoteUser": "vscode",
   "runArgs": [
     "--name",
     "devdash-devcontainer",
@@ -20,7 +21,7 @@
       "configureZshAsDefaultShell": true,
       "installOhMyZsh": true,
       "upgradePackages": true,
-      "username": "node"
+      "username": "vscode"
     },
     "ghcr.io/devcontainers-extra/features/apt-packages:1": {
       "packages": "socat"
@@ -32,9 +33,9 @@
   },
   "mounts": [
     "source=devdash-tailscale-state,target=/var/lib/tailscale,type=volume",
-    "source=${localEnv:HOME}/.doppler,target=/home/node/.doppler,type=bind",
-    "source=gemini-cli-settings,target=/home/node/.gemini,type=volume",
-    "source=${localEnv:HOME}/.ssh,target=/home/node/.ssh,type=bind"
+    "source=${localEnv:HOME}/.doppler,target=/home/vscode/.doppler,type=bind",
+    "source=gemini-cli-settings,target=/home/vscode/.gemini,type=volume",
+    "source=${localEnv:HOME}/.ssh,target=/home/vscode/.ssh,type=bind"
   ],
   "forwardPorts": [],
   "containerEnv": {
