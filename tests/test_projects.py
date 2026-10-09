@@ -533,6 +533,45 @@ def test_a_cold_failure_is_raised_rather_than_swallowed():
         memo.get()
 
 
+def test_a_cold_failure_recovers_after_the_ttl():
+    """A docker that was not up yet must not poison the memo until a restart.
+
+    This is the reboot bug: `serve()` warms the memo before the docker socket
+    exists, the first read fails, and every poll after that re-raised the
+    boot-time error for the life of the process even once docker was healthy.
+    """
+    calls = []
+
+    def flaky():
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError("docker is not reachable")
+        return "back"
+
+    memo = projects._Memo(0.0, flaky)  # 0 TTL: every read may retry
+    with pytest.raises(OSError, match="not reachable"):
+        memo.get()
+
+    assert memo.get() == "back"
+    assert len(calls) >= 2
+
+
+def test_a_cold_failure_is_not_retried_on_every_read():
+    """Within the TTL the error is served, not re-attempted: a docker that is
+    down must not spawn a thread per poll."""
+    calls = []
+
+    def boom():
+        calls.append(1)
+        raise OSError("nope")
+
+    memo = projects._Memo(60.0, boom)
+    for _ in range(5):
+        with pytest.raises(OSError, match="nope"):
+            memo.get()
+    assert len(calls) == 1
+
+
 def test_a_failed_refresh_keeps_the_last_good_value():
     """A blip on the second read must not blank a page that has data."""
     calls = []

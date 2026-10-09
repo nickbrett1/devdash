@@ -43,7 +43,11 @@ class _Memo:
     Only the first call blocks (there is nothing to serve yet), which is why
     `serve()` warms these at startup. A failed refresh keeps the last good
     value rather than blanking the page; a failure with *no* value yet is
-    re-raised, so a broken join still looks like one.
+    re-raised, so a broken join still looks like one — but only until the TTL
+    expires, after which the next call tries again. A cold failure must not
+    poison the memo for the life of the process: the startup warm races the
+    docker socket, and a docker that was not up yet has to recover on the next
+    poll, not only on a restart.
     """
 
     def __init__(self, ttl, fn):
@@ -58,16 +62,22 @@ class _Memo:
     def get(self):
         with self._cond:
             if self._value is not None:
+                # A value to serve: hand it over now and refresh behind it if
+                # it has gone stale.
                 if time.monotonic() - self._at > self.ttl and not self._refreshing:
                     self._start()
                 return self._value
-            # Nothing to serve yet: wait for the first sample rather than hand
-            # a caller a half-built answer.
-            while self._refreshing:
-                self._cond.wait()
-            if self._value is None and self._error is not None:
-                raise self._error
-            self._start()
+            # Nothing to serve yet. Try once on the first call, and again on
+            # any call after the TTL — a cold failure (docker not up yet at
+            # boot, say) must not wedge the memo until a restart. The clock
+            # moves on failure too, so this retries on the TTL rather than on
+            # every request.
+            if not self._refreshing and (
+                self._error is None or time.monotonic() - self._at > self.ttl
+            ):
+                self._start()
+            # Wait for the sample rather than hand a caller a half-built
+            # answer.
             while self._refreshing:
                 self._cond.wait()
             if self._value is None and self._error is not None:
