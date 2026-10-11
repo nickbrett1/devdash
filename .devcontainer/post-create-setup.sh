@@ -218,39 +218,46 @@ git config --global --add safe.directory /workspaces/devdash
 
 
 echo "INFO: Configuring GitHub auth over SSH (no PAT)..."
-# genproj-github-auth (SSH-first): GitHub remotes authenticate via an SSH key
-# supplied by the host bind-mount (~/.ssh) or the forwarded SSH agent. No PAT
-# is ever written to ~/.gitconfig or remote URLs. Defaults to SSH; fails loud
-# with guidance if no working key/agent is found. Idempotent: re-runs must not
-# duplicate or clobber the existing rewrite.
+# genproj-ssh-auth: the host's ~/.ssh is bind-mounted at $HOME/.ssh-host — NOT at
+# $HOME/.ssh — so the container's own ~/.ssh stays container-owned and plain
+# `ssh`, `git`, `scp` and VS Code all work with no -i and no core.sshCommand.
+# Host files keep the host uid (macOS 501), which OpenSSH running as the
+# container uid refuses, so we copy them in with container ownership. We never
+# mutate the mount. Idempotent: a re-run re-syncs and never duplicates or
+# clobbers the existing rewrite. Preferred: a forwarded SSH agent needs no keys
+# on disk at all.
 
-# --- 1. Make a usable key for the container user ---------------------------
-# The host ~/.ssh is bind-mounted at $HOME/.ssh. Those files keep the host uid
-# (macOS 501), which OpenSSH (running as the container uid, typically 1000)
-# refuses to use. We never chown the mount (that mutates the host file).
-# Preferred: forward the SSH agent (zero keys on disk). Fallback: copy the
-# mounted key into a container-owned dir with mode 600.
+HOST_SSH="$HOME/.ssh-host"
 KEY_COPIED=""
 if [ -n "${SSH_AUTH_SOCK:-}" ] && command -v ssh-add &> /dev/null && ssh-add -l >/dev/null 2>&1; then
-    echo "INFO: GitHub auth via forwarded SSH agent (${SSH_AUTH_SOCK})."
+    echo "INFO: GitHub auth via forwarded SSH agent (${SSH_AUTH_SOCK}) — no keys copied."
 else
-    mkdir -p "$HOME/.genproj-ssh" && chmod 700 "$HOME/.genproj-ssh"
-    for KEY in "$HOME/.ssh/id_ed25519" "$HOME/.ssh/id_rsa"; do
-        if [ -r "$KEY" ]; then
-            DEST="$HOME/.genproj-ssh/$(basename "$KEY")"
-            cp "$KEY" "$DEST"
-            chmod 600 "$DEST"
-            KEY_COPIED="$DEST"
-            echo "INFO: Copied host-mounted key $KEY into $DEST."
-            break
-        fi
+    mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+    for KEY in "$HOST_SSH"/id_*; do
+        [ -f "$KEY" ] || continue
+        BASE="$(basename "$KEY")"
+        cp -f "$KEY" "$HOME/.ssh/$BASE"
+        case "$BASE" in
+            *.pub) chmod 644 "$HOME/.ssh/$BASE" ;;
+            *)     chmod 600 "$HOME/.ssh/$BASE"; KEY_COPIED="$KEY_COPIED $BASE" ;;
+        esac
     done
+    if [ -f "$HOST_SSH/known_hosts" ]; then
+        cp -f "$HOST_SSH/known_hosts" "$HOME/.ssh/known_hosts"
+        chmod 644 "$HOME/.ssh/known_hosts"
+    fi
+    if [ -n "$KEY_COPIED" ]; then
+        echo "INFO: Copied host SSH keys into $HOME/.ssh:$KEY_COPIED"
+    else
+        echo "WARN: No host SSH keys found at $HOST_SSH."
+    fi
 fi
 
-# --- 2. Point git's ssh at the copied key (if any) -------------------------
-# Persisted in ~/.gitconfig (no secret involved), so it survives re-runs.
-if [ -n "$KEY_COPIED" ]; then
-    git config --global core.sshCommand "ssh -i $KEY_COPIED -o IdentitiesOnly=yes"
+# Older setups pointed git at a copied key via core.sshCommand; the keys now
+# live in ~/.ssh, where ssh finds them by default. Drop the stale override.
+if git config --global --get core.sshCommand >/dev/null 2>&1; then
+    git config --global --unset core.sshCommand
+    echo "INFO: Removed legacy core.sshCommand (keys now live in ~/.ssh)."
 fi
 
 # --- 3. Idempotent SSH insteadOf rewrite for github.com ---------------------
