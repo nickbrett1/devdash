@@ -116,6 +116,49 @@ def test_register_returns_the_login_url_once_it_appears(monkeypatch):
     assert any("-d" in c for c in calls), "registration must be started detached"
 
 
+def test_register_clears_a_stale_up_without_killing_its_own_shell(monkeypatch):
+    """The start script must not `pkill -f 'tailscale up'`.
+
+    It runs under `sh -c "<script>"`, so the shell's own argv contains the
+    literal text "tailscale up". A `-f` pattern therefore matches and SIGTERMs
+    the very shell running it: the following `rm`/`nohup` never execute, no log
+    file is written, and `register` reports "no login URL yet" against a node
+    that has one. Match by process name instead.
+    """
+    seen = {}
+
+    def fake_docker(args, timeout=15):
+        if "exec" in args and "-d" in args:
+            seen["script"] = args[-1]
+            return _completed("")
+        return _completed("To authenticate, visit:\n\thttps://login.tailscale.com/a/abc123\n")
+
+    monkeypatch.setattr(tailnet, "_docker", fake_docker)
+    monkeypatch.setattr(tailnet, "facts", lambda cid: {"state": "logged_out", "ip": None})
+    tailnet.register("c1", "acme")
+    assert "pkill -x tailscale" in seen["script"]
+    assert "pkill -f" not in seen["script"], (
+        "a `-f` pattern matches this script's own shell and kills it before "
+        "it can start `tailscale up`")
+
+
+def test_register_falls_back_to_status_when_the_log_never_lands(monkeypatch):
+    """If the detached run's output is missing, `tailscale status` still prints
+    the login URL for a logged-out node — read it rather than reporting nothing."""
+    def fake_docker(args, timeout=15):
+        if "exec" in args and "-d" in args:
+            return _completed("")  # the detached start
+        if args[-1] == "status":
+            return _completed("Logged out.\nLog in at: https://login.tailscale.com/a/zzz9\n")
+        return _completed("")  # the (empty) log file
+
+    monkeypatch.setattr(tailnet, "_docker", fake_docker)
+    monkeypatch.setattr(tailnet, "facts", lambda cid: {"state": "logged_out", "ip": None})
+    monkeypatch.setattr(tailnet.time, "sleep", lambda seconds: None)
+    out = tailnet.register("c1", "acme", wait=0.01)
+    assert out["url"] == "https://login.tailscale.com/a/zzz9"
+
+
 def test_wait_connected_returns_true_once_the_container_connects(monkeypatch):
     states = iter(["logged_out", "logged_out", "connected"])
     monkeypatch.setattr(tailnet, "facts", lambda cid: {"state": next(states), "ip": None})

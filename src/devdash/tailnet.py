@@ -171,6 +171,26 @@ def _read_log(container_id):
     return r.stdout or ""
 
 
+def _read_login_url(container_id, log=""):
+    """The login URL, from the detached run's log or, failing that, `status`.
+
+    The log is written by our own `tailscale up`, so it is the direct source.
+    But `tailscale status` prints the same URL for a logged-out node, so it is a
+    fallback for the case where the detached run's output went somewhere
+    unexpected — better a URL from the daemon than "no login URL yet" against a
+    node that plainly has one.
+    """
+    match = _URL_RE.search(log)
+    if match:
+        return match.group(0)
+    try:
+        r = _docker(["exec", "-u", "root", container_id, "tailscale", "status"], timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = _URL_RE.search(r.stdout or "")
+    return match.group(0) if match else None
+
+
 def register(container_id, host, wait=8.0):
     """Start `tailscale up` detached; return the login URL once it appears.
 
@@ -188,9 +208,16 @@ def register(container_id, host, wait=8.0):
 
     # A previous detached `up` may still be waiting for its login URL; a second
     # one refuses to run ("another tailscale up is running"), so clear it first.
-    # `-f 'tailscale up'` cannot match tailscaled itself.
+    # Match by process *name* (`-x tailscale`), never by command line: this
+    # script runs under `sh -c "<script>"`, so the shell's own argv contains the
+    # literal text "tailscale up". `pkill -f 'tailscale up'` therefore matches
+    # and SIGTERMs the very shell running it, the `rm`/`nohup` never execute, no
+    # log file is written, and `register` always came back "no login URL yet" —
+    # even against a node whose `tailscale status` printed a URL the whole time.
+    # `-x tailscale` matches the CLI's comm name and is safe: tailscaled is a
+    # different name and the shell is "sh".
     script = (
-        "pkill -f 'tailscale up' >/dev/null 2>&1; "
+        "pkill -x tailscale >/dev/null 2>&1; "
         f"rm -f {_LOG_PATH}; "
         f"nohup tailscale up --hostname={shlex.quote(host)} > {_LOG_PATH} 2>&1 &"
     )
@@ -203,9 +230,9 @@ def register(container_id, host, wait=8.0):
     out = ""
     while time.monotonic() < deadline:
         out = _read_log(container_id)
-        match = _URL_RE.search(out)
-        if match:
-            return {"started": True, "url": match.group(0), "detail": "authenticate to finish"}
+        url = _read_login_url(container_id, out)
+        if url:
+            return {"started": True, "url": url, "detail": "authenticate to finish"}
         time.sleep(0.5)
     return {"started": True, "url": None,
             "detail": out.strip() or "tailscale up started; no login URL yet"}
