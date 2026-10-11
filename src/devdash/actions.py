@@ -179,6 +179,11 @@ def register_tailscale(name, on_log=None, on_attention=None, wait=None):
                   else "no container to register")
         return {"name": name, "state": state, "started": False, "url": None,
                 "detail": detail}
+    if result.get("state") == "absent":
+        # The gate found the container but tailscale has no state yet, so it did
+        # not start anything. Report that honestly instead of a `started` that
+        # claims a registration that never began.
+        return {"name": name, "started": False, "url": None, **result}
     return {"name": name, "started": True, **result}
 
 
@@ -203,12 +208,16 @@ def tailscale_gate(name, on_log, on_attention=None, wait=None, force_agent=False
     login to complete, then re-run the post-start hook so the agent starts now
     that an address exists.
 
-    Returns None when there is nothing to do (no container, no tailscale, or
-    already connected) so an open/provision can tell "skipped" from "did
-    something". `force_agent` makes an already-connected container re-run its
-    post-start hook anyway — the manual retry wants that, because a container
-    registered on an earlier run (or whose agent failed this run) is exactly the
-    case it is there to fix; `postStartCommand` is idempotent, so it is safe.
+    Returns None only when there is nothing to do at all — no running
+    container, or an already-connected one with no `force_agent` — so an
+    open/provision can tell "skipped" from "did something". Every other path
+    returns a result *and* speaks: a container whose tailscale is not up yet,
+    or a `register` that came back without a URL, now logs a line and sets
+    `attention` instead of returning None into silence. `force_agent` makes an
+    already-connected container re-run its post-start hook anyway — the manual
+    retry wants that, because a container registered on an earlier run (or whose
+    agent failed this run) is exactly the case it is there to fix;
+    `postStartCommand` is idempotent, so it is safe.
     """
     container = _container_for(name)
     if not container or not container.get("running"):
@@ -216,7 +225,19 @@ def tailscale_gate(name, on_log, on_attention=None, wait=None, force_agent=False
     cid = container["id"]
     state = tailnet.facts(cid)["state"]
     if state == "absent":
-        return None
+        # The container is up but tailscale reports no state yet — the daemon is
+        # usually still coming up behind `devcontainer up`, and on a first
+        # launch the binary may not even be on PATH. Do not fall through to
+        # `tailscale up` (with no daemon to talk to it would only fail), but do
+        # not return None either: that silence is the bug this fixes — the phone
+        # saw an ordinary build log with no hint that a registration step even
+        # exists. Say what is happening, and point at the tile's Register
+        # button, which is what completes the job once the daemon is up.
+        detail = "Tailscale isn't up yet in this container — tap Register once it's built"
+        on_log(f"[devdash] tailscale: {detail}")
+        if on_attention:
+            on_attention({"kind": "tailscale", "url": None, "host": name, "detail": detail})
+        return {"state": "absent", "url": None, "connected": False, "detail": detail}
     if state == "connected":
         if not force_agent:
             return None
@@ -229,7 +250,18 @@ def tailscale_gate(name, on_log, on_attention=None, wait=None, force_agent=False
     url = result.get("url")
     on_log(f"[devdash] tailscale: {result['detail']}")
     if not url:
-        return {"state": "logged_out", **result}
+        # `register` ran but no login URL surfaced: `tailscale up` failed, or a
+        # previous run is still mid-login and refused to start again. Either way
+        # the phone has nothing to tap, so say so and set attention rather than
+        # returning a result the UI would show as a plain "logged out" — the
+        # tile keeps its Register button, and a silent return here reads as a
+        # hang.
+        detail = (f"Tailscale did not give a login URL for {name} — "
+                  "tap Register to try again")
+        on_log(f"[devdash] tailscale: {detail}")
+        if on_attention:
+            on_attention({"kind": "tailscale", "url": None, "host": name, "detail": detail})
+        return {"state": "logged_out", **result, "detail": detail}
 
     on_log(f"[devdash] tailscale: open {url} to authenticate; this job waits, then starts the agent.")
     if on_attention:

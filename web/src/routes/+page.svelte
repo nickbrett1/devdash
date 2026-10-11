@@ -394,16 +394,25 @@
 
 					<!-- How to reach a running container: its tailnet state and the
 					     ssh target. This is the step devopen skips when there is no
-					     authkey, surfaced where the phone can use it. -->
-					{#if p.connection}
+					     authkey, surfaced where the phone can use it. Any running
+					     container that is not yet connected gets a Register button —
+					     not only one the tailnet probe already resolved — because a
+					     freshly built container can be up before its tailscale state
+					     is readable, and that first launch is exactly when the phone
+					     needs a way to register. -->
+					{#if p.connection || p.state === 'running'}
 						<div class="conn">
-							{#if p.connection.state === 'connected'}
+							{#if p.connection && p.connection.state === 'connected'}
 								<span class="badge tailnet" title="on the tailnet as {p.connection.host}">tailnet</span>
 								{#if p.connection.ssh}
 									<code class="ssh">{p.connection.ssh}</code>
 								{/if}
-							{:else if p.connection.state === 'logged_out'}
-								<span class="badge warn-badge" title="the container has tailscale but is not registered">not on tailnet</span>
+							{:else}
+								{#if p.connection && p.connection.state === 'logged_out'}
+									<span class="badge warn-badge" title="the container has tailscale but is not registered">not on tailnet</span>
+								{:else if p.connection && p.connection.state === 'absent'}
+									<span class="badge muted-badge">no tailscale</span>
+								{/if}
 								<button
 									class="pill register"
 									disabled={isRunning(p.name)}
@@ -411,8 +420,6 @@
 								>
 									{isRunning(p.name) ? 'Registering…' : 'Register'}
 								</button>
-							{:else}
-								<span class="badge muted-badge">no tailscale</span>
 							{/if}
 						</div>
 					{/if}

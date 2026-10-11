@@ -256,6 +256,59 @@ def test_gate_is_a_noop_when_already_connected(rows, monkeypatch):
     assert actions.tailscale_gate("acme", lambda line: None) is None
 
 
+def test_gate_speaks_when_tailscale_is_not_up_yet(rows, monkeypatch):
+    """The bug this fixes: a first launch whose tailscaled has not come up yet
+    returned None with no message, so the phone saw an ordinary build log and no
+    hint that registering was even possible. Now it logs and sets attention,
+    pointing at the tile's Register button."""
+    monkeypatch.setattr(actions.containers, "list_devcontainers", lambda: [_container()])
+    monkeypatch.setattr(actions.tailnet, "facts",
+                        lambda cid: {"state": "absent", "ip": None})
+    seen = {}
+    out = actions.tailscale_gate(
+        "acme",
+        lambda line: seen.setdefault("log", []).append(line),
+        lambda payload: seen.update(attention=payload),
+    )
+    assert out is not None
+    assert out["state"] == "absent" and out["url"] is None
+    assert any("tailscale" in line for line in seen["log"])
+    assert seen["attention"]["kind"] == "tailscale"
+    assert seen["attention"]["url"] is None
+    assert "Register" in seen["attention"]["detail"]
+
+
+def test_gate_speaks_when_register_returns_no_login_url(rows, monkeypatch):
+    """A `register` that comes back without a URL used to leave the job looking
+    like a plain "logged out" with nothing to tap. It must log and set attention
+    so the phone still has a way forward."""
+    monkeypatch.setattr(actions.containers, "list_devcontainers", lambda: [_container()])
+    monkeypatch.setattr(actions.tailnet, "facts",
+                        lambda cid: {"state": "logged_out", "ip": None})
+    monkeypatch.setattr(actions.tailnet, "register",
+                        lambda cid, host: {"started": True, "url": None,
+                                           "detail": "no login URL yet"})
+    seen = {}
+    out = actions.tailscale_gate(
+        "acme",
+        lambda line: seen.setdefault("log", []).append(line),
+        lambda payload: seen.update(attention=payload),
+    )
+    assert out["url"] is None
+    assert seen["attention"]["url"] is None
+    assert any("tailscale" in line for line in seen["log"])
+
+
+def test_register_tailscale_reports_when_tailscale_is_not_up(rows, monkeypatch):
+    """The manual Register tap must not claim success when the gate could not
+    start anything because tailscale has no state yet."""
+    monkeypatch.setattr(actions.containers, "list_devcontainers", lambda: [_container()])
+    monkeypatch.setattr(actions.tailnet, "facts",
+                        lambda cid: {"state": "absent", "ip": None})
+    out = actions.register_tailscale("acme")
+    assert out["started"] is False and out["state"] == "absent"
+
+
 def test_gate_registers_waits_then_starts_the_agent(rows, monkeypatch):
     monkeypatch.setattr(actions.containers, "list_devcontainers", lambda: [_container()])
     monkeypatch.setattr(actions.tailnet, "facts",
