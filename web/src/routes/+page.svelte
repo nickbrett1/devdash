@@ -287,6 +287,20 @@
 		}
 	}
 
+	// Rebuild pulls origin, then recreates the container. devopen's
+	// clone_or_update already runs `git fetch` + `git pull --ff-only` on an
+	// existing workspace, so this is "pull before reprovisioning" — the fetch
+	// and the rebuild are the same call, and there is no separate pull to
+	// expose. Confirmed, because it tears down any running container.
+	function rebuild(name) {
+		const ok = window.confirm(
+			`Rebuild ${name}?\n\nPulls the latest from origin, then recreates the devcontainer. ` +
+				'Any running container for the project is stopped and replaced.'
+		);
+		if (!ok) return;
+		startJob(`/api/projects/${encodeURIComponent(name)}/open`, { fresh: true }, name);
+	}
+
 	function bytes(n) {
 		if (n === null || n === undefined) return '—';
 		const units = ['B', 'kB', 'MB', 'GB', 'TB'];
@@ -428,12 +442,23 @@
 							{#if canOpen(p)}
 								<button
 									disabled={isRunning(p.name)}
-									title="reopen / rebuild and open a window"
+									title="reopen and open a VS Code window (reuses a running container)"
 									onclick={() => startJob(`/api/projects/${encodeURIComponent(p.name)}/open`, {}, p.name)}
 								>
 									{isRunning(p.name) ? 'Opening…' : 'Open'}
 								</button>
 							{/if}
+							<!-- Pull origin and recreate the container, so a fix already
+							     pushed to GitHub lands in the running devcontainer. Shown
+							     even while the window is open, which is exactly when you
+							     need it. -->
+							<button
+								disabled={isRunning(p.name)}
+								title="pull origin, then recreate the container"
+								onclick={() => rebuild(p.name)}
+							>
+								{isRunning(p.name) ? 'Rebuilding…' : 'Rebuild'}
+							</button>
 						{/if}
 						{#if offer[p.name]}
 							<button class="warn" disabled={!!busy[p.name]} onclick={() => act(p.name, 'close', { force: true })}>
