@@ -117,46 +117,52 @@ fi
 
 
 # Setup python virtual environment and install dependencies
-# (memo: genproj python devcontainer .venv PATH). postCreate runs with the
-# workspace as CWD, but cd explicitly so this also works when invoked from
-# elsewhere (e.g. a manual re-run after the container restarted in $HOME).
-cd "/workspaces/devdash" 2>/dev/null || true
+# (memo: genproj python devcontainer .venv PATH). The venv lives under the
+# container's own $HOME, NOT in the workspace: the workspace is bind-mounted to
+# the host, so an in-tree venv is shared with the host and a post-create here
+# would rewrite the host's editable install (and can repoint its interpreter),
+# breaking any host process that runs the same .venv. $HOME is not mounted.
+# postCreate runs with the workspace as CWD, but cd explicitly for the editable
+# install (it needs pyproject.toml), which also covers a manual re-run.
+VENV_DIR="$HOME/.devcontainer-venv"
 
-if [ ! -d ".venv" ]; then
-    echo "INFO: Creating Python virtual environment (.venv)..."
-    python3 -m venv .venv
+if [ ! -d "$VENV_DIR" ]; then
+    echo "INFO: Creating Python virtual environment ($VENV_DIR)..."
+    python3 -m venv "$VENV_DIR"
 fi
+
+cd "/workspaces/devdash" 2>/dev/null || true
 
 if [ -f "requirements.txt" ]; then
     echo "INFO: Installing dependencies from requirements.txt..."
-    .venv/bin/pip install -r requirements.txt
+    "$VENV_DIR/bin/pip" install -r requirements.txt
 elif [ -f "pyproject.toml" ]; then
     echo "INFO: Installing dependencies from pyproject.toml (dev extras)..."
-    .venv/bin/pip install -e ".[dev]"
+    "$VENV_DIR/bin/pip" install -e ".[dev]"
 fi
 
-# genproj-python-venv-path: expose .venv/bin on PATH for shells that do NOT
+# genproj-python-venv-path: expose the venv's bin on PATH for shells that do NOT
 # inherit devcontainer.json remoteEnv (VS Code terminals get PATH from
 # remoteEnv; ssh / 'bash -lc' / tmux panes started outside VS Code do not).
 # The marker comment keeps this idempotent across post-create re-runs.
 VENV_RC_MARKER='# genproj-python-venv-path'
 if ! grep -qF "$VENV_RC_MARKER" "$HOME/.bashrc" 2>/dev/null; then
     cat >> "$HOME/.bashrc" <<'EOF'
-# genproj-python-venv-path: prefer project .venv
-if [ -d "/workspaces/devdash/.venv/bin" ]; then
-    export PATH="/workspaces/devdash/.venv/bin:$PATH"
+# genproj-python-venv-path: prefer the container venv (outside the workspace)
+if [ -d "$HOME/.devcontainer-venv/bin" ]; then
+    export PATH="$HOME/.devcontainer-venv/bin:$PATH"
 fi
 EOF
-    echo "INFO: Added .venv PATH hook to ~/.bashrc"
+    echo "INFO: Added venv PATH hook to ~/.bashrc"
 fi
 if ! grep -qF "$VENV_RC_MARKER" "$HOME/.zshrc" 2>/dev/null; then
     cat >> "$HOME/.zshrc" <<'EOF'
-# genproj-python-venv-path: prefer project .venv
-if [ -d "/workspaces/devdash/.venv/bin" ]; then
-    export PATH="/workspaces/devdash/.venv/bin:$PATH"
+# genproj-python-venv-path: prefer the container venv (outside the workspace)
+if [ -d "$HOME/.devcontainer-venv/bin" ]; then
+    export PATH="$HOME/.devcontainer-venv/bin:$PATH"
 fi
 EOF
-    echo "INFO: Added .venv PATH hook to ~/.zshrc"
+    echo "INFO: Added venv PATH hook to ~/.zshrc"
 fi
 
 
