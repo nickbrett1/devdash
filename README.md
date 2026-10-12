@@ -156,14 +156,14 @@ and `~/DevOpen/devreap`. Overlay editable installs on top of the pins:
 
 ### Re-pinning a tag
 
-Bumping `@v0.1.1` → `@v0.1.2` in `pyproject.toml` and running
+Bumping `@v0.1.2` → `@v0.1.3` in `pyproject.toml` and running
 `pip install -e .` does **nothing**: pip sees the distribution name already
 satisfied and leaves the old commit installed. Install the ref explicitly,
 then confirm what you got:
 
 ```bash
 .venv/bin/pip install --force-reinstall --no-deps \
-    "devreap @ git+https://github.com/nickbrett1/devreap@v0.1.2"
+    "devreap @ git+https://github.com/nickbrett1/devreap@v0.1.3"
 .venv/bin/pip freeze | grep devreap   # shows the commit the tag resolved to
 ```
 
