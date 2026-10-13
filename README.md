@@ -456,6 +456,67 @@ slowest read rather than the sum. `serve()` warms the memos at startup, off the
 request path, so a restart does not make the next poll pay for the first
 sample.
 
+## MCP
+
+An agent can open, close and rebuild a container through the same server, over
+MCP. The endpoint is `POST /mcp` on the ordinary port — `http://mac-studio:3990/mcp`
+— and it is reachable exactly as everything else is: from the tailnet and
+nowhere else (see **Access**). There is no token, and the endpoint is **off
+until config says otherwise**, because this is a mutating surface an agent
+drives:
+
+```json
+"mcp": {"enabled": true, "tools": []}
+```
+
+`tools: []` means the default set — every tool below **except
+`provision_project`**. A non-empty list is an explicit allowlist that replaces
+the default, so `provision_project` is reachable only by naming it. That one is
+held back on purpose: provision builds an arbitrary repository's `Dockerfile`
+as root, and this devcontainer mounts the host's `~/.ssh` and `~/.doppler`, so
+"an agent may provision" is "an agent may run code with your credentials". Open,
+close and rebuild act on projects that already exist and are trusted.
+
+The tools are a projection of the same functions the page's buttons call — no
+second implementation, and one job registry, so a build an agent starts is the
+*job the phone polls*:
+
+| Tool | Does | Annotations |
+| ---- | ---- | ----------- |
+| `list_projects` | the joined rows, as `/api/projects` | `readOnlyHint` |
+| `get_status` | VM memory and the devcontainer counts | `readOnlyHint` |
+| `get_job` | a job's state, log tail and `attention` | `readOnlyHint` |
+| `open_project` | start/attach a container and open a window | — |
+| `close_project` | stop it and close the window (live-session veto) | `destructiveHint` |
+| `rebuild_project` | delete the container and rebuild it | `destructiveHint` |
+| `register_on_tailnet` | the manual Tailscale retry | — |
+| `provision_project` | clone + build a repo not here yet | `destructiveHint`, off by default |
+
+Long actions answer with a `job_id` to follow with `get_job`, exactly as the
+HTTP jobs do; `get_job` takes a `wait_seconds` (capped at 120) so a caller can
+block a little instead of polling. A job that needs a human — a Tailscale login
+with no authkey — carries its login URL as `attention`, for the agent to hand
+over; that is the same link the phone's job view shows.
+
+A refusal is an `isError: true` result, not a REST `200`: the consumer is a
+model, and it should **report** "a live session is attached" rather than narrate
+success. `destructiveHint` is stated on every tool because MCP defaults it to
+true — `open` is not destructive, `rebuild` is, and a client that honours the
+hint can prompt before a rebuild. `clean` is never exposed: `rebuild` recreates
+a container, `clean` deletes your uncommitted work, and no agent gets the
+second.
+
+Point a client at it directly:
+
+```jsonc
+// .agents/mcp_config.json
+"devdash": { "serverUrl": "http://mac-studio:3990/mcp" }
+```
+
+MCP is JSON-RPC 2.0 over one stateless POST — no session, no SSE, no dependency
+— which is why the endpoint is a route on the server that already exists rather
+than a second process with its own idea of what is running.
+
 ## On a phone
 
 The page is installable (a manifest, a `standalone` display mode and an
