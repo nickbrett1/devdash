@@ -5,7 +5,8 @@ Lives at ~/.devdash/config.json (mode 600):
     {
       "host":  "",                  # bind address; "" = auto: tailnet IP, else 127.0.0.1
       "port":  3990,
-      "web_dir": "web/dist"
+      "web_dir": "web/dist",
+      "mcp":   {"enabled": false, "tools": []}   # HTTP MCP endpoint; off by default
     }
 
 Thresholds are deliberately NOT duplicated here. The Buildkite token and org,
@@ -37,7 +38,13 @@ def config_path(home=None):
 
 
 def _defaults():
-    return {"host": "", "port": DEFAULT_PORT, "web_dir": "web/dist"}
+    return {"host": "", "port": DEFAULT_PORT, "web_dir": "web/dist",
+            # The MCP endpoint is off until an operator turns it on: it is a
+            # mutating surface an agent drives, and the tools are the same ones
+            # that stop containers. `tools: []` means the default set (every
+            # tool except provision_project); a non-empty list is an explicit
+            # allowlist, so provision_project is reachable only by naming it.
+            "mcp": {"enabled": False, "tools": []}}
 
 
 def save(cfg, home=None):

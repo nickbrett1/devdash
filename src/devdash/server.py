@@ -22,7 +22,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import actions, jobs, projects, repos
+from . import actions, config, jobs, mcp, projects, repos
 
 HEALTH_BODY = b'{"status": "ok"}'
 
@@ -101,6 +101,15 @@ class Handler(SimpleHTTPRequestHandler):
             self.wfile.write(HEALTH_BODY)
             return
 
+        # The MCP endpoint is POST-only and streams nothing back, so a GET is
+        # refused rather than answered — see mcp.py.
+        if path == "/mcp":
+            self.send_response(405)
+            self.send_header("Allow", "POST")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+
         try:
             if path == "/api/projects":
                 rows, meta = projects.rows(memory=projects.memory(),
@@ -135,6 +144,15 @@ class Handler(SimpleHTTPRequestHandler):
         phone's back button must not be able to stop a container."""
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
+
+        # MCP speaks JSON-RPC on its own terms: the body is a request, not a
+        # form, and a body that is not JSON must answer -32700 rather than
+        # degrade to {} the way the REST routes do. Handled before _json_body
+        # reads (and drains) the request body, for both reasons.
+        if path == "/mcp":
+            self._handle_mcp()
+            return
+
         parts = [unquote(p) for p in path.split("/") if p]
         body = self._json_body()
         query = parse_qs(parsed.query)
@@ -189,33 +207,63 @@ class Handler(SimpleHTTPRequestHandler):
     def _start(self, kind, target, body, query, fn):
         """Begin a job unless one for the same target is already running.
 
-        Refusing rather than queueing is the honest answer: `devcontainer up`
-        on a workspace that is already building would fight the first one for
-        the same container name, and the phone would rather hear "already
-        running" than wait behind a build it did not start.
+        The dedupe lives in jobs.start_unique so MCP and this route refuse a
+        second job for the same target identically — see jobs.start_unique.
         """
-        for existing in jobs.running(kind=kind, target=target):
+        snapshot, already = jobs.start_unique(kind, target, lambda on_log, on_attention: _run_job(
+            fn, on_log, on_attention, body, query))
+        if already:
             self._send_json({"error": f"{kind} already running for {target}",
-                             "job_id": existing["job_id"], "state": existing["state"]},
+                             "job_id": snapshot["job_id"], "state": snapshot["state"]},
                             status=409)
             return
-        snapshot = jobs.start(kind, target, lambda on_log, on_attention: _run_job(
-            fn, on_log, on_attention, body, query))
         self._send_json(snapshot, status=202)
+
+    def _raw_body(self):
+        """The request body as text. The MCP route needs the raw bytes to tell
+        a parse error from an empty notification; the REST routes want a dict."""
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return ""
+        if length <= 0:
+            return ""
+        return self.rfile.read(length).decode("utf-8", "replace")
+
+    def _handle_mcp(self):
+        """One JSON-RPC message in, one response out. The endpoint is dark
+        until config opts in, because it is a mutating surface an agent drives."""
+        cfg = config.load()
+        if not (cfg.get("mcp") or {}).get("enabled"):
+            self._send_json({"error": "mcp is not enabled"}, status=404)
+            return
+        raw = self._raw_body()
+        try:
+            message = json.loads(raw) if raw.strip() else None
+        except ValueError:
+            # A transport-level fault is -32700, and still an HTTP 200: the
+            # JSON-RPC error object is the answer, not an HTTP status.
+            self._send_json({"jsonrpc": "2.0", "id": None,
+                             "error": {"code": -32700, "message": "parse error"}})
+            return
+        response = mcp.handle(message, cfg)
+        if response is None:
+            self.send_response(202)  # a notification: accepted, nothing to say
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self._send_json(response)
 
     def _json_body(self):
         """The request body as a dict. An unparseable body is {} — every field
         is optional and defaults to the safe side, and a phone is as likely to
         POST nothing as to POST anything."""
+        raw = self._raw_body()
+        if not raw:
+            return {}
         try:
-            length = int(self.headers.get("Content-Length") or 0)
+            data = json.loads(raw)
         except ValueError:
-            return {}
-        if length <= 0:
-            return {}
-        try:
-            data = json.loads(self.rfile.read(length).decode("utf-8"))
-        except (ValueError, UnicodeDecodeError):
             return {}
         return data if isinstance(data, dict) else {}
 

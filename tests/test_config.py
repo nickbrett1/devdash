@@ -16,7 +16,8 @@ from devdash import config
 
 def test_load_creates_a_default_config_on_first_run(tmp_path):
     cfg = config.load(home=str(tmp_path))
-    assert cfg == {"host": "", "port": config.DEFAULT_PORT, "web_dir": "web/dist"}
+    assert cfg == {"host": "", "port": config.DEFAULT_PORT, "web_dir": "web/dist",
+                   "mcp": {"enabled": False, "tools": []}}
     assert os.path.exists(config.config_path(str(tmp_path)))
 
 

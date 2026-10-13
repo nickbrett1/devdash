@@ -126,6 +126,21 @@ def start(kind, target, fn):
     return job.snapshot()
 
 
+def start_unique(kind, target, fn):
+    """Start `fn` unless a job for `(kind, target)` is already running.
+
+    Returns `(snapshot, already_running)`. Refusing rather than queueing is the
+    honest answer and is shared by both callers — the HTTP route and MCP — so a
+    second `devcontainer up` on a workspace already building cannot start: it
+    would fight the first for the same container name, and the caller would
+    rather hear "already running" than wait behind a build it did not start.
+    """
+    existing = running(kind=kind, target=target)
+    if existing:
+        return existing[0], True
+    return start(kind, target, fn), False
+
+
 def get(job_id):
     with _lock:
         job = _jobs.get(job_id)

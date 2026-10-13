@@ -413,3 +413,64 @@ def test_static_files_come_from_web_dir_not_the_cwd(tmp_path, monkeypatch):
         httpd.shutdown()
         httpd.server_close()
         server.Handler.root = None
+
+
+# -- the MCP endpoint -------------------------------------------------------
+#
+# MCP is JSON-RPC on its own terms: the endpoint is dark until config opts in,
+# a notification is accepted with no body, and a body that is not JSON is a
+# JSON-RPC parse error answered with an HTTP 200 — the error object is the
+# answer, not the status.
+
+
+def post_raw(port, path, raw, headers=None):
+    headers = dict(headers or {})
+    headers.setdefault("Content-Type", "application/json")
+    headers["Content-Length"] = str(len(raw))
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+        conn.request("POST", path, body=raw, headers=headers)
+        r = conn.getresponse()
+        return r.status, Headers((k.lower(), v) for k, v in r.getheaders()), r.read()
+    finally:
+        conn.close()
+
+
+def test_mcp_get_is_method_not_allowed(live):
+    status, headers, _ = get(live, "/mcp")
+    assert status == 405
+    assert headers["Allow"] == "POST"
+
+
+def test_mcp_is_dark_until_config_enables_it(live, monkeypatch):
+    monkeypatch.setattr(server.config, "load", lambda: {"mcp": {"enabled": False}})
+    status, _, body = post(live, "/mcp",
+                           {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+    assert status == 404
+    assert "enabled" in json.loads(body)["error"]
+
+
+def test_mcp_initialize_round_trips(live, monkeypatch):
+    monkeypatch.setattr(server.config, "load", lambda: {"mcp": {"enabled": True, "tools": []}})
+    status, headers, body = post(
+        live, "/mcp",
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+         "params": {"protocolVersion": "2025-06-18"}})
+    assert status == 200
+    assert headers["Content-Type"] == "application/json"
+    assert json.loads(body)["result"]["serverInfo"]["name"] == "devdash"
+
+
+def test_mcp_a_notification_is_accepted_with_no_body(live, monkeypatch):
+    monkeypatch.setattr(server.config, "load", lambda: {"mcp": {"enabled": True}})
+    status, _, body = post(live, "/mcp",
+                           {"jsonrpc": "2.0", "method": "notifications/initialized"})
+    assert status == 202
+    assert body == b""
+
+
+def test_mcp_bad_json_is_a_parse_error(live, monkeypatch):
+    monkeypatch.setattr(server.config, "load", lambda: {"mcp": {"enabled": True}})
+    status, _, body = post_raw(live, "/mcp", b"{not json")
+    assert status == 200
+    assert json.loads(body)["error"]["code"] == -32700
