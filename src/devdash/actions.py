@@ -224,16 +224,25 @@ def tailscale_gate(name, on_log, on_attention=None, wait=None, force_agent=False
         return None
     cid = container["id"]
     state = tailnet.facts(cid)["state"]
+    if state == "absent" and tailnet.present(cid):
+        # Absent is not final: the container has the binary, but tailscaled is
+        # usually still starting behind `devcontainer up`. Reading it once and
+        # giving up (or, worse, letting the old text probe call it connected)
+        # is how an open used to finish without the container ever reaching the
+        # tailnet. Wait for the daemon, then decide.
+        on_log("[devdash] tailscale: waiting for the daemon to answer")
+        state = tailnet.wait_for_tailscale(cid)
     if state == "absent":
-        # The container is up but tailscale reports no state yet — the daemon is
-        # usually still coming up behind `devcontainer up`, and on a first
-        # launch the binary may not even be on PATH. Do not fall through to
-        # `tailscale up` (with no daemon to talk to it would only fail), but do
-        # not return None either: that silence is the bug this fixes — the phone
-        # saw an ordinary build log with no hint that a registration step even
-        # exists. Say what is happening, and point at the tile's Register
-        # button, which is what completes the job once the daemon is up.
-        detail = "Tailscale isn't up yet in this container — tap Register once it's built"
+        # Do not fall through to `tailscale up` (with no daemon to talk to it
+        # would only fail), but do not return None into silence either: the
+        # phone saw an ordinary build log with no hint that a registration step
+        # even exists. Say what is happening, and point at the tile's Register
+        # button — which now starts the daemon and completes the job, rather
+        # than reporting "no tailscale" and doing nothing.
+        has_tailscale = tailnet.present(cid)
+        detail = ("Tailscale isn't reachable in this container yet — "
+                  "tap Register to start it" if has_tailscale
+                  else "No Tailscale in this container")
         on_log(f"[devdash] tailscale: {detail}")
         if on_attention:
             on_attention({"kind": "tailscale", "url": None, "host": name, "detail": detail})
@@ -249,6 +258,14 @@ def tailscale_gate(name, on_log, on_attention=None, wait=None, force_agent=False
     result = tailnet.register(cid, name)
     url = result.get("url")
     on_log(f"[devdash] tailscale: {result['detail']}")
+    if not url and tailnet.facts(cid)["state"] == "connected":
+        # No URL is not the same as no registration: a node with persisted
+        # state reconnects as soon as its daemon starts, with nothing for the
+        # user to tap. Ask the container instead of reporting a failure.
+        started, detail = start_agent(cid, container["workspace"])
+        on_log(f"[devdash] agent: {detail}")
+        return {"state": "connected", "url": None, "connected": True,
+                "agent_started": started, "detail": result["detail"]}
     if not url:
         # `register` ran but no login URL surfaced: `tailscale up` failed, or a
         # previous run is still mid-login and refused to start again. Either way

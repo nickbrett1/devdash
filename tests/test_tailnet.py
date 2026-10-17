@@ -5,6 +5,7 @@ and a project list must not break because one container has none. Synthetic
 names throughout — this repo is public.
 """
 
+import os
 import subprocess
 
 import pytest
@@ -28,12 +29,19 @@ def _docker(stdout, returncode=0):
 
 
 def test_facts_reads_a_connected_container(monkeypatch):
-    monkeypatch.setattr(tailnet, "_docker", _docker("STATE=connected\nIP=100.64.0.9\n"))
+    monkeypatch.setattr(tailnet, "_docker",
+                        _docker("BACKEND=Running\nIP=100.64.0.9\n"))
     assert tailnet.facts("c1") == {"state": "connected", "ip": "100.64.0.9"}
 
 
 def test_facts_reports_a_logged_out_container(monkeypatch):
-    monkeypatch.setattr(tailnet, "_docker", _docker("STATE=logged_out\nIP=\n"))
+    monkeypatch.setattr(tailnet, "_docker", _docker("BACKEND=NeedsLogin\nIP=\n"))
+    assert tailnet.facts("c1") == {"state": "logged_out", "ip": None}
+
+
+def test_facts_reports_a_stopped_node_as_not_on_the_tailnet(monkeypatch):
+    """`tailscale down` leaves a node that Register can bring back."""
+    monkeypatch.setattr(tailnet, "_docker", _docker("BACKEND=Stopped\nIP=\n"))
     assert tailnet.facts("c1") == {"state": "logged_out", "ip": None}
 
 
@@ -54,6 +62,100 @@ def test_facts_degrades_on_a_broken_probe(monkeypatch):
     # tailscaled not up yet, or the exec failed: no STATE line at all.
     monkeypatch.setattr(tailnet, "_docker", _docker("failed to connect to local tailscaled", 1))
     assert tailnet.facts("c1") == {"state": "absent", "ip": None}
+
+
+def _probe_with(tmp_path, script):
+    """Run the real probe against a stub `tailscale` on PATH.
+
+    The old probe's failure lived entirely in shell logic, so a mocked
+    `_docker` could never have caught it: it fed the parser a verdict the
+    shell would never have produced.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "tailscale"
+    stub.write_text(script)
+    stub.chmod(0o755)
+    env = dict(os.environ, PATH=f"{bin_dir}:{os.environ.get('PATH', '')}")
+    out = subprocess.run(["sh", "-c", tailnet._PROBE], check=False,
+                         capture_output=True, text=True, env=env)
+    return tailnet._parse(out.stdout)
+
+
+def test_probe_does_not_call_a_dead_daemon_connected(tmp_path):
+    """The bug behind a container that "started" but never joined the tailnet.
+
+    `tailscale status` with no daemon prints "failed to connect to local
+    tailscaled" — non-empty text that the old heuristic read as a healthy
+    node. It is exactly the state of a container whose tailscaled has not
+    started, so the open job skipped registration and reported success.
+    """
+    state, ip = _probe_with(tmp_path, "#!/bin/sh\n"
+                            "echo 'failed to connect to local tailscaled' >&2\n"
+                            "exit 1\n")
+    assert (state, ip) == ("absent", None)
+
+
+def test_probe_reads_the_json_backend_state(tmp_path):
+    state, ip = _probe_with(
+        tmp_path,
+        "#!/bin/sh\n"
+        "if [ \"$1\" = ip ]; then echo 100.64.0.9; exit 0; fi\n"
+        "echo '{\"BackendState\": \"Running\"}'\n",
+    )
+    assert (state, ip) == ("connected", "100.64.0.9")
+
+
+def test_probe_treats_a_running_node_without_an_address_as_absent():
+    """Running is not reachable; an ssh target needs an address."""
+    assert tailnet._state("Running", None) == "absent"
+    assert tailnet._state("NeedsLogin", None) == "logged_out"
+    assert tailnet._state("", None) == "absent"       # daemon did not answer
+    assert tailnet._state("Starting", None) == "absent"
+
+
+def test_wait_for_tailscale_returns_a_state_once_the_daemon_answers(monkeypatch):
+    states = iter(["absent", "absent", "logged_out"])
+    monkeypatch.setattr(tailnet, "facts", lambda cid: {"state": next(states), "ip": None})
+    monkeypatch.setattr(tailnet.time, "sleep", lambda seconds: None)
+    assert tailnet.wait_for_tailscale("c1", timeout=10) == "logged_out"
+
+
+def test_wait_for_tailscale_gives_up_after_the_timeout(monkeypatch):
+    monkeypatch.setattr(tailnet, "facts", lambda cid: {"state": "absent", "ip": None})
+    monkeypatch.setattr(tailnet.time, "sleep", lambda seconds: None)
+    assert tailnet.wait_for_tailscale("c1", timeout=0) == "absent"
+
+
+def test_register_starts_the_daemon_and_accepts_a_self_reconnect(monkeypatch):
+    """A node with persisted state reconnects as soon as tailscaled runs — no
+    login URL, nothing to tap, and `tailscale up` was never needed."""
+    states = iter(["logged_out", "connected", "connected"])
+    monkeypatch.setattr(tailnet, "facts", lambda cid: {"state": next(states), "ip": None})
+    monkeypatch.setattr(tailnet, "present", lambda cid: True)
+    started = {"daemon": False, "up": False}
+
+    def fake_docker(args, timeout=15):
+        if args[-1] == tailnet._START_DAEMON:
+            started["daemon"] = True
+            return _completed("")
+        started["up"] = True
+        return _completed("")
+
+    monkeypatch.setattr(tailnet, "_docker", fake_docker)
+    monkeypatch.setattr(tailnet.time, "sleep", lambda seconds: None)
+    out = tailnet.register("c1", "acme")
+    assert started["daemon"] is True and started["up"] is False
+    assert out["started"] is False
+    assert "reconnected" in out["detail"]
+
+
+def test_present_degrades_when_docker_is_unreachable(monkeypatch):
+    def boom(args, timeout=15):
+        raise FileNotFoundError("docker")
+
+    monkeypatch.setattr(tailnet, "_docker", boom)
+    assert tailnet.present("c1") is False
 
 
 def test_connection_builds_the_blink_link_and_ssh_for_a_connected_node(monkeypatch, tmp_path):

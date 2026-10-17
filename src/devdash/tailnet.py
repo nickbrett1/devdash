@@ -33,16 +33,29 @@ from devreap import containers
 # One `docker exec` answers both questions. `tailscale status` needs the daemon
 # socket, which is root-owned, so this runs as root — the same as devopen's own
 # probe.
+#
+# Read the *JSON* backend state, not the human text. The text is not a contract
+# and, worse, the old heuristic ("anything that is not 'Logged out' is
+# connected") counted the daemon-down message — "failed to connect to local
+# tailscaled" — as a healthy node. That is precisely the state of a container
+# whose tailscaled has not started yet, so a fresh container was reported
+# connected with no IP, the open job considered the tailnet step done, and
+# nobody was offered a Register button. `--json` is emitted by the daemon
+# itself (BackendState), so an unreachable daemon produces no BackendState at
+# all instead of plausible-looking prose.
 _PROBE = (
     "if ! command -v tailscale >/dev/null 2>&1; then echo 'STATE=absent'; exit 0; fi; "
-    "status=$(tailscale status 2>&1); "
-    "case \"$status\" in "
-    "  *'Logged out'*) echo 'STATE=logged_out';; "
-    "  '') echo 'STATE=logged_out';; "
-    "  *) echo 'STATE=connected';; "
-    "esac; "
+    "json=$(tailscale status --json 2>/dev/null); "
+    "echo \"BACKEND=$(printf '%s\\n' \"$json\" | "
+    "sed -n 's/.*\"BackendState\"[[:space:]]*:[[:space:]]*\"\\([A-Za-z]*\\)\".*/\\1/p' | "
+    "head -n1)\"; "
     "echo \"IP=$(tailscale ip -4 2>/dev/null | head -n1)\""
 )
+
+# BackendState values that mean "there is a node here, but it is not on the
+# tailnet and `tailscale up` is the remedy". NeedsMachineAuth is the admin
+# approval queue, which Register cannot clear, but it is still not connected.
+_LOGGED_OUT = ("NeedsLogin", "NeedsMachineAuth", "Stopped")
 
 # Where the detached `tailscale up` writes its login URL, inside the container.
 _LOG_PATH = "/tmp/devdash-tailscale.log"
@@ -53,6 +66,36 @@ _URL_RE = re.compile(r"https://login\.tailscale\.com/\S+")
 def _docker(args, timeout=15):
     return subprocess.run([containers.DOCKER] + args, capture_output=True,
                           text=True, timeout=timeout, check=False)
+
+
+def _state(backend, ip):
+    """BackendState (+ whether it has an address) as devdash's three states.
+
+    `connected` requires an address: a node can report Running for a moment
+    before it is assigned one, and an ssh target built from a hostname the
+    tailnet cannot resolve is worse than an honest "not yet". Everything that
+    is neither Running nor a login prompt — Starting, NoState, a daemon that
+    did not answer at all (empty backend) — is `absent`: there is nothing to
+    authenticate *yet*.
+    """
+    if backend == "Running":
+        return "connected" if ip else "absent"
+    if backend in _LOGGED_OUT:
+        return "logged_out"
+    return "absent"
+
+
+def _parse(output):
+    """(state, ip) from the probe's KEY=value lines."""
+    backend, ip = "", None
+    for line in (output or "").splitlines():
+        if line.startswith("STATE="):
+            return line.split("=", 1)[1].strip() or "absent", ip
+        if line.startswith("BACKEND="):
+            backend = line.split("=", 1)[1].strip()
+        elif line.startswith("IP="):
+            ip = line.split("=", 1)[1].strip() or None
+    return _state(backend, ip), ip
 
 
 def facts(container_id):
@@ -66,13 +109,53 @@ def facts(container_id):
     except (OSError, subprocess.SubprocessError):
         return {"state": "absent", "ip": None}
 
-    state, ip = "absent", None
-    for line in (r.stdout or "").splitlines():
-        if line.startswith("STATE="):
-            state = line.split("=", 1)[1].strip() or "absent"
-        elif line.startswith("IP="):
-            ip = line.split("=", 1)[1].strip() or None
+    state, ip = _parse(r.stdout)
     return {"state": state, "ip": ip}
+
+
+def present(container_id):
+    """True if the tailscale CLI exists in the container at all.
+
+    `facts` reports `absent` both for "no tailscale here" and "the daemon has
+    not answered yet". A caller that would *wait* for the daemon, or start it,
+    has to know which one it is looking at.
+    """
+    try:
+        r = _docker(["exec", "-u", "root", container_id, "sh", "-c",
+                     "command -v tailscale >/dev/null 2>&1"])
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return r.returncode == 0
+
+
+def wait_for_tailscale(container_id, timeout=15.0, interval=1.5):
+    """Poll until the daemon answers, or `timeout` elapses; return the state.
+
+    A container has the tailscale binary for a while before its tailscaled is
+    up — `devcontainer up` returns first, and postStart starts the daemon
+    behind it. Reading `absent` once and calling it final is what let an open
+    finish as if the tailnet step did not exist, so the gate waits here
+    instead of guessing. Only waits when there is something to wait for: the
+    caller checks `present` first.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        state = facts(container_id)["state"]
+        if state != "absent" or time.monotonic() >= deadline:
+            return state
+        time.sleep(interval)
+
+
+# Bring tailscaled up the same way devopen does: the container may have the
+# binary and the persisted state (so the node reconnects without a login) but
+# no daemon, because a plain `docker start` does not run postStart.
+_START_DAEMON = (
+    "command -v tailscaled >/dev/null 2>&1 || exit 0; "
+    "pgrep -x tailscaled >/dev/null 2>&1 && exit 0; "
+    "start-stop-daemon --start --background --oknodo "
+    "--pidfile /var/run/tailscaled.pid --make-pidfile "
+    "--exec /usr/sbin/tailscaled -- --state=/var/lib/tailscale/tailscaled.state"
+)
 
 
 def _remote_user(workspace):
@@ -191,7 +274,7 @@ def _read_login_url(container_id, log=""):
     return match.group(0) if match else None
 
 
-def register(container_id, host, wait=8.0):
+def register(container_id, host, wait=8.0, daemon_wait=10.0):
     """Start `tailscale up` detached; return the login URL once it appears.
 
     `tailscale up` without an authkey prints a login URL and then *blocks* until
@@ -205,6 +288,21 @@ def register(container_id, host, wait=8.0):
     if facts(container_id)["state"] == "connected":
         return {"started": False, "url": None,
                 "detail": f"{host} is already registered on the tailnet"}
+
+    # No login URL to hand out is not the only way this can be fixed: a node
+    # whose state was persisted reconnects by itself as soon as its daemon
+    # runs, and needs no browser at all. That is the ordinary case after a
+    # container restart, and `tailscale up` against a dead daemon would only
+    # fail, so start the daemon first and give it a moment to answer.
+    if present(container_id):
+        try:
+            _docker(["exec", "-u", "root", container_id, "sh", "-c", _START_DAEMON],
+                    timeout=20)
+        except (OSError, subprocess.SubprocessError):
+            pass  # the `up` below reports the real failure if the daemon is gone
+        if wait_for_tailscale(container_id, timeout=daemon_wait) == "connected":
+            return {"started": False, "url": None,
+                    "detail": f"{host} reconnected to the tailnet"}
 
     # A previous detached `up` may still be waiting for its login URL; a second
     # one refuses to run ("another tailscale up is running"), so clear it first.

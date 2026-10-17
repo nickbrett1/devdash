@@ -411,7 +411,10 @@
 								{#if p.connection && p.connection.state === 'logged_out'}
 									<span class="badge warn-badge" title="the container has tailscale but is not registered">not on tailnet</span>
 								{:else if p.connection && p.connection.state === 'absent'}
-									<span class="badge muted-badge">no tailscale</span>
+									<!-- "absent" is both "no tailscale here" and "the daemon
+									     is not up yet"; Register starts it, so the badge
+									     must not read as a dead end. -->
+									<span class="badge muted-badge" title="tailscale is not running in this container">tailscale off</span>
 								{/if}
 								<button
 									class="pill register"

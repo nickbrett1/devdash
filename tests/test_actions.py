@@ -264,6 +264,9 @@ def test_gate_speaks_when_tailscale_is_not_up_yet(rows, monkeypatch):
     monkeypatch.setattr(actions.containers, "list_devcontainers", lambda: [_container()])
     monkeypatch.setattr(actions.tailnet, "facts",
                         lambda cid: {"state": "absent", "ip": None})
+    monkeypatch.setattr(actions.tailnet, "present", lambda cid: True)
+    monkeypatch.setattr(actions.tailnet, "wait_for_tailscale",
+                        lambda cid, timeout=15.0, interval=1.5: "absent")
     seen = {}
     out = actions.tailscale_gate(
         "acme",
@@ -299,12 +302,55 @@ def test_gate_speaks_when_register_returns_no_login_url(rows, monkeypatch):
     assert any("tailscale" in line for line in seen["log"])
 
 
+def test_gate_waits_for_a_starting_daemon_then_registers(rows, monkeypatch):
+    """`absent` while tailscaled starts is not a dead end: wait, then take the
+    login URL exactly as for any other logged-out node."""
+    monkeypatch.setattr(actions.containers, "list_devcontainers", lambda: [_container()])
+    monkeypatch.setattr(actions.tailnet, "facts",
+                        lambda cid: {"state": "absent", "ip": None})
+    monkeypatch.setattr(actions.tailnet, "present", lambda cid: True)
+    monkeypatch.setattr(actions.tailnet, "wait_for_tailscale",
+                        lambda *a, **k: "logged_out")
+    monkeypatch.setattr(actions.tailnet, "register",
+                        lambda cid, host: {"started": True,
+                                           "url": "https://login.tailscale.com/a/x",
+                                           "detail": "authenticate to finish"})
+    monkeypatch.setattr(actions.tailnet, "wait_connected",
+                        lambda cid, timeout, on_wait=None: True)
+    monkeypatch.setattr(actions, "start_agent", lambda cid, ws: (True, "agent started"))
+    seen = {}
+    out = actions.tailscale_gate(
+        "acme", lambda line: seen.setdefault("log", []).append(line),
+        lambda payload: seen.update(attention=payload))
+    assert out["state"] == "connected" and out["url"] == "https://login.tailscale.com/a/x"
+    assert seen["attention"]["url"] == "https://login.tailscale.com/a/x"
+
+
+def test_gate_treats_a_silent_register_that_connected_as_success(rows, monkeypatch):
+    """A node that reconnects on its own gives `register` no URL to hand out.
+    That is a success, not a failed login — ask the container before saying so."""
+    monkeypatch.setattr(actions.containers, "list_devcontainers", lambda: [_container()])
+    states = iter(["logged_out", "connected"])
+    monkeypatch.setattr(actions.tailnet, "facts",
+                        lambda cid: {"state": next(states, "connected"), "ip": "100.0.0.1"})
+    monkeypatch.setattr(actions.tailnet, "register",
+                        lambda cid, host: {"started": False, "url": None,
+                                           "detail": "acme reconnected to the tailnet"})
+    monkeypatch.setattr(actions, "start_agent", lambda cid, ws: (True, "agent started"))
+    out = actions.tailscale_gate("acme", lambda line: None)
+    assert out["state"] == "connected" and out["connected"] is True
+    assert out["url"] is None and out["agent_started"] is True
+
+
 def test_register_tailscale_reports_when_tailscale_is_not_up(rows, monkeypatch):
     """The manual Register tap must not claim success when the gate could not
     start anything because tailscale has no state yet."""
     monkeypatch.setattr(actions.containers, "list_devcontainers", lambda: [_container()])
     monkeypatch.setattr(actions.tailnet, "facts",
                         lambda cid: {"state": "absent", "ip": None})
+    monkeypatch.setattr(actions.tailnet, "present", lambda cid: True)
+    monkeypatch.setattr(actions.tailnet, "wait_for_tailscale",
+                        lambda cid, timeout=15.0, interval=1.5: "absent")
     out = actions.register_tailscale("acme")
     assert out["started"] is False and out["state"] == "absent"
 

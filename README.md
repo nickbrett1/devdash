@@ -391,14 +391,22 @@ resolve an address, and the agent never started.
 
 So the open/provision **job** takes that step itself:
 
-1. after `devcontainer up`, it reads the container's tailscale state;
-2. if the container is on the tailnet (or has no tailscale), it is a no-op;
-3. if it is `logged_out`, it starts `tailscale up` **detached** and puts the
-   login URL on the job as `attention` — a real link the phone taps, not a URL
-   left in the build log;
-4. the job then **waits** (up to `actions.TAILSCALE_WAIT`, 10 minutes) for the
+1. after `devcontainer up`, it reads the container's tailscale state — the
+   `BackendState` from `tailscale status --json`, never the human text. The
+   text is not a contract, and the daemon-down message ("failed to connect to
+   local tailscaled") is a plausible-looking status: reading it as connected
+   is how a container came up "successfully" and never joined the tailnet;
+2. `absent` with the binary present is not final either — tailscaled is
+   usually still starting behind `devcontainer up`, so the gate waits for it
+   (bounded, `tailnet.wait_for_tailscale`) before deciding;
+3. if the container is on the tailnet (or has no tailscale), it is a no-op;
+4. if it is `logged_out` — or the daemon starts and the node reconnects by
+   itself, which needs no login at all — it starts `tailscale up` **detached**
+   and puts the login URL on the job as `attention` — a real link the phone
+   taps, not a URL left in the build log;
+5. the job then **waits** (up to `actions.TAILSCALE_WAIT`, 10 minutes) for the
    login to complete, mirroring the CLI's block; and
-5. once the container is connected, it re-runs the devcontainer's
+6. once the container is connected, it re-runs the devcontainer's
    `postStartCommand` — as the container's own user, with the right `HOME` — so
    `agent-dev.sh` now finds an address and the agent starts.
 
@@ -423,9 +431,11 @@ basename), `user` is `remoteUser` from the devcontainer config, and `blink` is
 the same `blink://` deep link devopen prints — rebuilt here from the container's
 own facts, so it exists whether or not this particular `open` printed one. `ssh`
 prefers the stable name over the IP, which changes on a re-register. `state` is
-`connected`, `logged_out` (tailscale present, not registered — the row offers
-`Register`) or `absent` (no tailscale in this container; the build simply has
-none).
+`connected` (Running *and* it has an address — a node without one is not
+reachable and not claimed), `logged_out` (tailscale present, not on the
+tailnet — the row offers `Register`, which starts the daemon if need be) or
+`absent` (the daemon did not answer, or there is no tailscale in this
+container at all).
 
 ### Why the first load is the slow one
 
