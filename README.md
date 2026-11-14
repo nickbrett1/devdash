@@ -527,6 +527,42 @@ MCP is JSON-RPC 2.0 over one stateless POST — no session, no SSE, no dependenc
 — which is why the endpoint is a route on the server that already exists rather
 than a second process with its own idea of what is running.
 
+## The UI is ui-registry blocks
+
+The page is not bespoke markup any more: it is four blocks from
+[@nb/ui-registry](https://github.com/nickbrett1/ui-registry) plus this app's
+layout, and `web/src/lib/StatusStrip.svelte` — the strip that used to be copied
+into the page and the tile by hand — is gone.
+
+| Where | Block | Why that one |
+| --- | --- | --- |
+| the VM summary (page and `/tile.html`) | `meter-strip` | A ratio against a ceiling: the bar *is* the fact, and `stat-strip` cannot express it. |
+| the project list, and the provision picker | `action-list` | One row per thing you *operate*: state, what it is holding, and the actions valid for that row right now. |
+| the job view | `log-view` | A `pre` with a head, a notice and an action row; the pane is bound back so this page keeps its follow-the-tail behaviour. |
+
+The blocks are **vendored** into `web/src/lib/components/nb/` (this app has no
+Tailwind and no shadcn-svelte, so installing them means copying the `.svelte`
+files), and the house theme is `web/src/app.css`: colour, type and base
+elements, with this app's own decisions in the section at the foot. Adopting the
+theme is what replaced the hardcoded `#161923`/`#3b4152`/`#94a3b8` palette.
+
+Two checks keep the copy honest, both in the pipeline:
+
+```bash
+COMPONENTS_REGISTRY_URL=… node scripts/check-nb-blocks.mjs   # are the bytes still 1.14.0's?
+node scripts/check-tokens.mjs web/src --theme web/src/app.css  # does every file name roles, not values?
+```
+
+`.nb-registry.json` names the release the copies came from. An edited block
+fails the first check (the next `add --overwrite` would silently revert it); a
+newer upstream release only prints a notice, because upgrading is a decision.
+The second check allows literal colours in exactly one file — the theme above —
+and fails any other file that writes `#fdba74` where it meant `var(--warn)`.
+
+One thing the theme deliberately leaves to the app: `--tap`, the height of a
+control. The house default is 2rem, right for a desktop and wrong under a
+thumb, so this app raises it to 2.75rem in `web/src/app.css`.
+
 ## On a phone
 
 The page is installable (a manifest, a `standalone` display mode and an
@@ -535,12 +571,12 @@ the 44 px minimum. The manifest is fetched same-origin, so `start_url: "/"`
 keeps the installed app pointed at the same tailnet URL you opened.
 
 A running project's row carries its tailnet state and, when it is on the
-tailnet, an **ssh** target and a **Blink** link. An earlier Blink link guessed
-at the host and never worked; this one is built from the container's own
-tailscale state and `remoteUser`, so it is the same link devopen would print —
-and it exists even for a container registered on some earlier run. When a
-container has tailscale but is not registered, the row offers `Register`, which
-answers with the login URL to open from the phone.
+tailnet, an **ssh** target built from the container's own tailscale state and
+`remoteUser` — the same name devopen would print. When a container has
+tailscale but is not registered, the row offers `Register`, which answers with
+the login URL to open from the phone; when the daemon is not up at all it says
+`tailscale off` and still offers `Register`, because starting it is what
+Register does.
 
 That is also why `open` itself registers Tailscale when devopen's config
 carries an authkey: reaching a project from the phone is most of the point of
@@ -566,7 +602,7 @@ entry for devdash, for the **Activity** group of the dashboard on the NAS. It
 is a service with an `href` (the click target, the full page) plus an `iframe`
 widget pointing at `/tile.html`.
 
-`/tile.html` is a route that renders `StatusStrip` and nothing else, so the
+`/tile.html` is a route that renders the `meter-strip` block and nothing else, so the
 card carries exactly the same summary as the top of the page — the VM memory
 meter with used *and* total, the devcontainer footprint, and the running/total
 devcontainer counts — and cannot drift from it. A `customapi` widget was the first

@@ -439,12 +439,18 @@ describe("reaching a running container", () => {
     }
   });
 
-  it("says so when a container has no tailscale at all", async () => {
+  it("says so when a container has no tailscale daemon, and still offers Register", async () => {
+    // "absent" is both "no tailscale here" and "the daemon is not up yet", and
+    // Register is the remedy for the second: it starts tailscaled. So the badge
+    // says what is true ("tailscale off") without reading as a dead end. This
+    // test used to assert the opposite -- a "no tailscale" badge and no
+    // Register -- which is how the daemon-not-started case became the one
+    // failure the probe fix was written for.
     stubAction(project({ state: "running", connection: { ...connected, state: "absent", blink: null, ssh: null } }));
     render(Page);
 
-    expect(await screen.findByText("no tailscale")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Register" })).not.toBeInTheDocument();
+    expect(await screen.findByText("tailscale off")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Register" })).toBeInTheDocument();
   });
 });
 

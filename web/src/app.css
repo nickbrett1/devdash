@@ -1,0 +1,386 @@
+/* House style.
+ *
+ * Two references, one language:
+ *   - deepseek-balance (the house *app* grammar): slate ground, hairline borders,
+ *     10px uppercase micro-labels with .05em tracking, tabular figures, pill
+ *     badges, 8px card radius, no pure black (#0f172a, not #000), colour carried
+ *     by rgba tints rather than solid pastels.
+ *   - fintechnick (the house *voice*): cream-yellow for emphasis (#fce4b8), green
+ *     for "good", system sans + monospace for anything numeric or identifier-like.
+ *
+ * The values are lifted from those two rather than invented, so a screen here
+ * sits next to a Homepage widget or a portfolio page without looking like a
+ * different product. Nothing in this file is search-specific.
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* ground + surfaces */
+  --bg: #0f172a; /* slate-900, deepseek-balance's html/body */
+  --bg-raised: rgba(30, 41, 59, 0.55); /* .card fill */
+  --bg-sunken: rgba(15, 23, 42, 0.35); /* .chart fill */
+  --bg-hover: rgba(51, 65, 85, 0.5);
+  --bg-selected: #334155; /* .seg button.on */
+
+  /* hairlines — borders are tints, not greys */
+  --line: rgba(148, 163, 184, 0.14);
+  --line-strong: rgba(148, 163, 184, 0.25);
+
+  /* ink */
+  --ink: #e2e8f0;
+  --ink-dim: #cbd5e1;
+  --ink-muted: rgba(226, 232, 240, 0.62);
+  --ink-faint: rgba(226, 232, 240, 0.42);
+
+  /* accents */
+  --accent: #7dd3fc; /* sky-300 — the house link */
+  --accent-soft: rgba(125, 211, 252, 0.14);
+  --ok: #6ee7b7;
+  --ok-bg: rgba(52, 211, 153, 0.15);
+  --warn: #fdba74;
+  --warn-bg: rgba(251, 146, 60, 0.15);
+  --bad: #fca5a5;
+  --bad-bg: rgba(248, 113, 113, 0.18);
+  --neutral: #94a3b8;
+  --neutral-bg: rgba(148, 163, 184, 0.15);
+
+  /* search highlights: fintechnick's cream, the one warm note in the palette */
+  --mark: #fce4b8;
+  --mark-bg: rgba(252, 228, 184, 0.18);
+
+  /* On an iPhone home screen the app launches with the status bar drawn *over*
+   the page (`apple-mobile-web-app-status-bar-style: black-translucent` plus
+   `viewport-fit=cover` in app.html). `viewport-fit` is what makes these four
+   insets non-zero; a page that ignores them starts under the clock, which is
+   how "browse the blocks" ended up invisible behind the time. Any sticky
+   element must also offset its `top` by --safe-top instead of 0. */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+
+  /* geometry + type */
+  /* A control's height, as a role rather than a number in each block. Desktop
+     screens want a compact 32px button; a phone wants 44px, which is not a
+     preference -- it is the smallest thing a thumb reliably hits (Apple HIG,
+     WCAG 2.5.5). data-scout already had this role in its own stylesheet
+     (--tap: 2.75rem); promoting it means a block names it and the consumer
+     decides, instead of every block hardcoding a pixel height that is wrong at
+     one end of the range. */
+  --tap: 2rem;
+  --radius: 8px;
+  --radius-sm: 6px;
+  --radius-pill: 999px;
+  --sans:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  background: var(--bg);
+  -webkit-text-size-adjust: 100%; /* iOS: no automatic text inflation on rotate */
+}
+
+body {
+  margin: 0;
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* Anything with an intrinsic width has to be told it may not exceed its column.
+   An image (or svg, video, table) wider than the phone scrolls the whole
+   document sideways, which on a sticky-header page reads as "the header and the
+   brand have slid off the right edge". Learned the hard way on the article page,
+   where a 689px banner image overflowed a 390px viewport by 311px; this is the
+   net so a component cannot reintroduce it. */
+img,
+svg,
+video,
+canvas,
+iframe,
+table {
+  max-width: 100%;
+}
+
+code,
+kbd,
+.num {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+code {
+  font-size: 0.92em;
+  background: var(--bg-sunken);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+::selection {
+  background: rgba(125, 211, 252, 0.28);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: 3px;
+}
+
+/* ---------------------------------------------------------------- primitives */
+
+/* 10px uppercase micro-label. Every section heading in the house style is this. */
+.micro {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-muted);
+}
+
+.section-title {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-muted);
+  margin: 16px 0 6px;
+}
+/* The page intro. Two rules, and the port that dropped them is why they are
+   here: `lede` and `sub-lede` are class names a page reaches for by instinct,
+   and if the theme does not define them the intro renders as body text at full
+   ink, indistinguishable from the paragraph beneath it. */
+.lede {
+  margin: 0 0 4px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  color: var(--ink);
+}
+.sub-lede {
+  margin: 0 0 16px;
+  color: var(--ink-muted);
+  max-width: 60ch;
+}
+
+.card {
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.pill {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  white-space: nowrap;
+  background: var(--neutral-bg);
+  color: var(--neutral);
+}
+
+.pill.ok {
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+.pill.warn {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+.pill.bad {
+  background: var(--bad-bg);
+  color: var(--bad);
+}
+.pill.info {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* Segmented control: the house way to show a small closed set of choices. */
+.seg {
+  display: inline-flex;
+  flex-wrap: wrap;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.seg button {
+  background: transparent;
+  color: var(--ink-dim);
+  border: 0;
+  padding: 5px 12px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.seg button.on {
+  background: var(--bg-selected);
+  color: #f1f5f9;
+}
+
+.seg button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.btn {
+  background: transparent;
+  color: var(--ink-dim);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  padding: 5px 12px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: #f1f5f9;
+}
+
+.btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.btn.primary {
+  background: var(--accent-soft);
+  border-color: rgba(125, 211, 252, 0.4);
+  color: var(--accent);
+}
+
+input[type="search"],
+input[type="text"] {
+  background: var(--bg-sunken);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13.5px;
+  padding: 7px 10px;
+}
+
+input[type="search"]::placeholder {
+  color: var(--ink-faint);
+}
+
+input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
+/* Inline notice. Tint + a 3px rule, never a full-bleed coloured block. */
+.notice {
+  border-left: 3px solid var(--neutral);
+  background: var(--neutral-bg);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--ink-dim);
+}
+
+.notice.ok {
+  border-left-color: var(--ok);
+  background: var(--ok-bg);
+}
+.notice.warn {
+  border-left-color: var(--warn);
+  background: var(--warn-bg);
+}
+.notice.bad {
+  border-left-color: var(--bad);
+  background: var(--bad-bg);
+}
+.notice.info {
+  border-left-color: var(--accent);
+  background: var(--accent-soft);
+}
+/* `accent` is the name consumers already write; `info` is the tone. Both must
+   work, or a notice silently loses its colour in a port. */
+.notice.accent {
+  border-left-color: var(--accent);
+  background: var(--accent-soft);
+}
+.notice code {
+  color: var(--mark);
+}
+
+.hint {
+  color: var(--ink-muted);
+  font-size: 11px;
+}
+
+/* Two quiet greys, because "de-emphasised" and "absent" are different weights
+   and every table cell has to pick one. */
+.quiet {
+  color: var(--ink-faint);
+}
+.muted {
+  color: var(--ink-muted);
+}
+
+/* The one thing that may be warm: a matched term inside a snippet. */
+mark {
+  background: var(--mark-bg);
+  color: var(--mark);
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+@media (max-width: 600px) {
+  body {
+    font-size: 12.5px;
+  }
+}
+
+/* iOS Safari *and* Chrome on Android zoom the whole page when a focused input is
+ * under 16px, and neither zooms back out — the field grows, the submit button
+ * slides off-screen, and the page reads as broken. This is a threshold, not a
+ * taste decision, and it is keyed on the pointer as well as the width: a phone in
+ * landscape is wider than 600px but is still a touch device.
+ *
+ * Keep this the only place a text field's font-size is set on touch. A component
+ * rule like `.bar input { font-size: 13.5px }` outranks it (two classes beat
+ * `input[type=search]`) and silently reintroduces the zoom. */
+@media (pointer: coarse), (max-width: 600px) {
+  input[type="search"],
+  input[type="text"] {
+    font-size: 16px;
+    padding: 6px 10px;
+  }
+}
+
+/* ------------------------------------------------------------------ devdash */
+
+/* What this app decides rather than what the theme decides. Everything above
+   this line is the house theme, copied from ui-registry at the version pinned
+   in .nb-registry.json (theme@1.14.0); the values below are the app's own.
+
+   `--tap` is the one the theme deliberately leaves to the consumer: the house
+   default is 2rem, which is right for a desktop screen and wrong under a thumb.
+   devdash is read and pressed while standing up, so its controls are 44px. */
+:root {
+  --tap: 2.75rem;
+}

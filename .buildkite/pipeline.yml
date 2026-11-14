@@ -20,13 +20,37 @@ steps:
           # a warning, and native modules built for the wrong architecture).
           platform: linux/arm64
           workdir: /workdir
+          environment:
+            - DOPPLER_TOKEN
     commands:
       - cd web
       - |
         PINNED="$$(node -p "require('./package.json').packageManager || ''" | sed -e 's/^npm@//')"
         if [ -n "$$PINNED" ]; then npm install -g "npm@$$PINNED"; fi
       - if [ -f package-lock.json ]; then npm ci --no-audit --no-fund --prefer-offline; else npm install --no-audit --no-fund; fi
+      # `npm test` is watch mode, so CI runs the one-shot form. Until the page
+      # was rebuilt on @nb blocks nothing here ran the frontend tests at all;
+      # the block behaviour the page depends on has tests now, so they gate.
+      - npx vitest run --coverage
       - npm run build
+      - |
+        # The @nb blocks in web/src/lib/components/nb/ are copies, and a copy
+        # nobody checks is the defect this step exists for: a block fix reaches
+        # a consumer only when CI compares the vendored bytes to the release the
+        # repo pins in .nb-registry.json. The base comes from Doppler and is a
+        # HOST -- the version lives in the repo whose bytes are at stake
+        # (ui-registry README, "Keeping a consumer on published bytes").
+        if ! command -v doppler >/dev/null 2>&1; then
+          apt-get update && apt-get install -y --no-install-recommends curl ca-certificates
+          curl -Ls --tlsv1.2 --proto "=https" --retry 3 https://cli.doppler.com/install.sh | sh
+        fi
+        export COMPONENTS_REGISTRY_URL="$$(doppler secrets get COMPONENTS_REGISTRY_URL --project common --config dev --plain)"
+        echo "registry: $$COMPONENTS_REGISTRY_URL"
+        node scripts/check-nb-blocks.mjs
+        # A block names a role, never a value (ui-registry scripts/check-tokens.mjs).
+        # The theme file is the one place allowed to hold literals, and here it
+        # is web/src/app.css -- which is the theme plus this app's --tap.
+        node scripts/check-tokens.mjs web/src --theme web/src/app.css
 
   - label: ":hammer: Build and test (python)"
     key: build

@@ -1,6 +1,10 @@
 <script>
 	import { onMount } from 'svelte';
-	import StatusStrip from '$lib/StatusStrip.svelte';
+	import '../app.css';
+	import ActionList from '$lib/components/nb/ActionList.svelte';
+	import LogView from '$lib/components/nb/LogView.svelte';
+	import MeterStrip from '$lib/components/nb/MeterStrip.svelte';
+	import { bytes, meterProps } from '$lib/status.js';
 
 	// The page is prerendered to a static asset and served by devdash's own
 	// Python server, so every number here comes from /api/* at runtime.
@@ -34,10 +38,12 @@
 	let updated = $state(null);
 	// Per-project action state, keyed by name. `busy[name]` is the verb in
 	// flight (so both buttons can disable and only the tapped one spins);
-	// `note[name]` is the last answer, including a refusal; `offer[name]` is a
-	// refusal the user may override.
+	// `answers[name]` is the last answer, including a refusal; `offer[name]` is
+	// a refusal the user may override. (Not `note`: that is the name of the
+	// `action-list` slot it fills, and a snippet of the same name would shadow
+	// the state inside itself.)
 	let busy = $state({});
-	let note = $state({});
+	let answers = $state({});
 	let offer = $state({});
 	// The one long-running job this phone started. `open` and `provision` both
 	// take minutes on a first build, so they answer with a job id and the log
@@ -47,7 +53,9 @@
 	// The job log opens as its own full-screen view (a "window" the phone can
 	// live in while a build runs) and follows its tail unless the reader has
 	// scrolled up — then it stays where they put it until they come back down.
-	// `logEl` is the scrolling element; the effect below runs as lines arrive.
+	// `logEl` is the scrolling node *inside* the block: `log-view` hands it back
+	// bound rather than owning the follow, because following is this page's
+	// opinion about a pane it cannot see.
 	let logEl = $state(null);
 	let following = $state(true);
 
@@ -246,9 +254,39 @@
 			: repos.filter((r) => r.toLowerCase().includes(repoFilter.trim().toLowerCase()))
 	);
 
+	// The row shape `action-list` renders. Each row carries the project it came
+	// from, so a snippet can still reach the fields the list does not know about
+	// (`connection`, `live_session`) without the block learning about projects.
+	const TONE = { running: 'ok', stopped: 'warn', absent: '' };
+
+	const rows = $derived(
+		projects.map((p) => ({
+			...p,
+			// A stopped or absent container is using nothing, and "—" beside a
+			// state that already says "absent" would be noise.
+			meta: p.mem_bytes ? bytes(p.mem_bytes) : '',
+			tone: TONE[p.state] ?? '',
+			badges: [
+				...(p.live_session ? [{ label: 'live session', tone: 'ok', title: p.live_evidence }] : []),
+				...(p.window_open ? [{ label: 'window open', tone: 'info' }] : []),
+				p.last_build
+					? {
+							label:
+								days(p.last_human_build_days) === null
+									? p.last_build
+									: `${p.last_build} · ${days(p.last_human_build_days)} ago`,
+							title: p.last_build
+						}
+					: { label: 'no human build' }
+			]
+		}))
+	);
+
+	const repoRows = $derived(filteredRepos.map((name) => ({ name })));
+
 	async function act(name, verb, extra = {}) {
 		busy = { ...busy, [name]: verb };
-		note = { ...note, [name]: null };
+		answers = { ...answers, [name]: null };
 		offer = { ...offer, [name]: false };
 		try {
 			const res = await fetch(`/api/projects/${encodeURIComponent(name)}/${verb}`, {
@@ -263,14 +301,14 @@
 				return;
 			}
 			if (!res.ok) {
-				note = { ...note, [name]: { ok: false, text: body.error || `HTTP ${res.status}` } };
+				answers = { ...answers, [name]: { ok: false, text: body.error || `HTTP ${res.status}` } };
 				return;
 			}
 			// A refusal arrives as a 200: the request succeeded, it just
 			// declined to act. Offer the override rather than re-deciding for
 			// the user.
 			if (body.refused) {
-				note = { ...note, [name]: { ok: false, text: body.detail } };
+				answers = { ...answers, [name]: { ok: false, text: body.detail } };
 				offer = { ...offer, [name]: true };
 				return;
 			}
@@ -278,13 +316,24 @@
 			if ('stopped' in body) bits.push(body.stopped ? 'container stopped' : 'nothing to stop');
 			if ('window_closed' in body) bits.push(body.window_closed ? 'window closed' : 'window left open');
 			if (body.uri) bits.push('opened in VS Code');
-			note = { ...note, [name]: { ok: true, text: bits.join(' · ') || body.detail || 'done' } };
+			answers = { ...answers, [name]: { ok: true, text: bits.join(' · ') || body.detail || 'done' } };
 			await load();
 		} catch (e) {
-			note = { ...note, [name]: { ok: false, text: `Could not reach devdash: ${e}` } };
+			answers = { ...answers, [name]: { ok: false, text: `Could not reach devdash: ${e}` } };
 		} finally {
 			busy = { ...busy, [name]: null };
 		}
+	}
+
+	function openProject(p) {
+		startJob(`/api/projects/${encodeURIComponent(p.name)}/open`, {}, p.name);
+	}
+
+	// Register is a job like the others: it drives the tailscale login, waits
+	// for the tailnet, then starts the agent — so it lands in the job view,
+	// whose attention link is the tap target the phone needs.
+	function openTailscale(name) {
+		startJob(`/api/projects/${encodeURIComponent(name)}/tailscale`, {}, name);
 	}
 
 	// Rebuild pulls origin, then recreates the container. devopen's
@@ -301,26 +350,11 @@
 		startJob(`/api/projects/${encodeURIComponent(name)}/open`, { fresh: true }, name);
 	}
 
-	function bytes(n) {
-		if (n === null || n === undefined) return '—';
-		const units = ['B', 'kB', 'MB', 'GB', 'TB'];
-		let i = 0;
-		while (n >= 1000 && i < units.length - 1) {
-			n /= 1000;
-			i += 1;
-		}
-		// 8_000_000_000 must read "8 GB", not "8.0 GB" — these are memorised
-		// numbers, and a trailing .0 makes them harder to compare at a glance.
-		const value = i === 0 || Number.isInteger(n) ? Math.round(n) : n.toFixed(1);
-		return `${value} ${units[i]}`;
-	}
-
 	function days(d) {
 		if (d === null || d === undefined) return null;
 		if (d < 1) return `${Math.round(d * 24)}h`;
 		return `${d.toFixed(1)}d`;
 	}
-
 </script>
 
 <svelte:head>
@@ -342,155 +376,123 @@
 		<h1>devdash</h1>
 		<div class="refresh">
 			{#if updated}
-				<span class="stamp">{updated.toLocaleTimeString()}</span>
+				<span class="stamp num">{updated.toLocaleTimeString()}</span>
 			{/if}
-			<button onclick={load} disabled={loading} aria-label="Refresh">↻</button>
+			<button class="btn icon" onclick={load} disabled={loading} aria-label="Refresh">↻</button>
 		</div>
 	</header>
 
-	<a class="provision-top" href="?provision=1" target="_blank" rel="noopener">Provision a repo</a>
+	<a class="btn provision-top" href="?provision=1" target="_blank" rel="noopener">
+		Provision a repo
+	</a>
 
 	{#if error}
-		<p class="error" role="alert">{error}</p>
+		<p class="notice bad" role="alert">{error}</p>
 	{/if}
 
 	{#if status}
-		<div class="strip-slot"><StatusStrip {status} /></div>
+		<div class="strip-slot"><MeterStrip {...meterProps(status)} /></div>
 	{/if}
 
 	{#if loading && projects.length === 0}
 		<p class="muted">Loading…</p>
-	{:else if projects.length === 0}
-		<p class="muted">No projects.</p>
 	{:else}
-		<ul class="projects">
-			{#each projects as p (p.name)}
-				<li class="project">
-					<div class="top">
-						<span class="name">{p.name}</span>
-						<span class="right">
-							{#if p.mem_bytes}
-								<span class="mem" title="memory this container is using">{bytes(p.mem_bytes)}</span>
+		<ActionList label="Projects" items={rows} emptyMessage="No projects.">
+			<!-- How to reach a running container: its tailnet state and the ssh
+			     target. This is the step devopen skips when there is no authkey,
+			     surfaced where the phone can use it. Any running container that
+			     is not yet connected gets a Register button — not only one the
+			     tailnet probe already resolved — because a freshly built
+			     container can be up before its tailscale state is readable, and
+			     that first launch is exactly when the phone needs a way to
+			     register. -->
+			{#snippet aside(p)}
+				{#if p.connection || p.state === 'running'}
+					<div class="conn">
+						{#if p.connection && p.connection.state === 'connected'}
+							<span class="pill info" title="on the tailnet as {p.connection.host}">tailnet</span>
+							{#if p.connection.ssh}
+								<code class="ssh">{p.connection.ssh}</code>
 							{/if}
-							<span class="state {p.state}">{p.state}</span>
-						</span>
-					</div>
-					<div class="badges">
-						{#if p.live_session}
-							<span class="badge live" title={p.live_evidence}>live session</span>
-						{/if}
-						{#if p.window_open}
-							<span class="badge window">window open</span>
-						{/if}
-						{#if p.last_build}
-							<span class="badge build" title={p.last_build}>
-								{p.last_build}
-								{#if days(p.last_human_build_days) !== null}&middot; {days(p.last_human_build_days)} ago{/if}
-							</span>
 						{:else}
-							<span class="badge muted-badge">no human build</span>
-						{/if}
-					</div>
-
-					<!-- How to reach a running container: its tailnet state and the
-					     ssh target. This is the step devopen skips when there is no
-					     authkey, surfaced where the phone can use it. Any running
-					     container that is not yet connected gets a Register button —
-					     not only one the tailnet probe already resolved — because a
-					     freshly built container can be up before its tailscale state
-					     is readable, and that first launch is exactly when the phone
-					     needs a way to register. -->
-					{#if p.connection || p.state === 'running'}
-						<div class="conn">
-							{#if p.connection && p.connection.state === 'connected'}
-								<span class="badge tailnet" title="on the tailnet as {p.connection.host}">tailnet</span>
-								{#if p.connection.ssh}
-									<code class="ssh">{p.connection.ssh}</code>
-								{/if}
-							{:else}
-								{#if p.connection && p.connection.state === 'logged_out'}
-									<span class="badge warn-badge" title="the container has tailscale but is not registered">not on tailnet</span>
-								{:else if p.connection && p.connection.state === 'absent'}
-									<!-- "absent" is both "no tailscale here" and "the daemon
-									     is not up yet"; Register starts it, so the badge
-									     must not read as a dead end. -->
-									<span class="badge muted-badge" title="tailscale is not running in this container">tailscale off</span>
-								{/if}
-								<button
-									class="pill register"
-									disabled={isRunning(p.name)}
-									onclick={() => startJob(`/api/projects/${encodeURIComponent(p.name)}/tailscale`, {}, p.name)}
-								>
-									{isRunning(p.name) ? 'Registering…' : 'Register'}
-								</button>
+							{#if p.connection && p.connection.state === 'logged_out'}
+								<span class="pill warn" title="the container has tailscale but is not registered">
+									not on tailnet
+								</span>
+							{:else if p.connection && p.connection.state === 'absent'}
+								<!-- "absent" is both "no tailscale here" and "the daemon
+								     is not up yet"; Register starts it, so the badge
+								     must not read as a dead end. -->
+								<span class="pill" title="tailscale is not running in this container">
+									tailscale off
+								</span>
 							{/if}
-						</div>
-					{/if}
-
-					<div class="actions">
-						{#if p.state === 'absent'}
-							<button
-								class="wide"
-								disabled={isRunning(p.name)}
-								onclick={() => startJob(`/api/projects/${encodeURIComponent(p.name)}/open`, {}, p.name)}
-							>
-								{isRunning(p.name) ? 'Opening…' : 'Open'}
-							</button>
-						{:else}
-							<!-- Close only where there is something to reclaim. On a stopped
-							     container it would close a leftover window and nothing else —
-							     a button named after RAM, with no RAM to free. -->
-							{#if p.state === 'running'}
-								<button
-									disabled={!!busy[p.name]}
-									title={p.live_session ? `live: ${p.live_evidence}` : 'stop the container'}
-									onclick={() => act(p.name, 'close')}
-								>
-									{busy[p.name] === 'close' ? 'Closing…' : 'Close'}
-								</button>
-							{/if}
-							{#if canOpen(p)}
-								<button
-									disabled={isRunning(p.name)}
-									title="reopen and open a VS Code window (reuses a running container)"
-									onclick={() => startJob(`/api/projects/${encodeURIComponent(p.name)}/open`, {}, p.name)}
-								>
-									{isRunning(p.name) ? 'Opening…' : 'Open'}
-								</button>
-							{/if}
-							<!-- Pull origin and recreate the container, so a fix already
-							     pushed to GitHub lands in the running devcontainer. Shown
-							     even while the window is open, which is exactly when you
-							     need it. -->
-							<button
-								disabled={isRunning(p.name)}
-								title="pull origin, then recreate the container"
-								onclick={() => rebuild(p.name)}
-							>
-								{isRunning(p.name) ? 'Rebuilding…' : 'Rebuild'}
-							</button>
-						{/if}
-						{#if offer[p.name]}
-							<button class="warn" disabled={!!busy[p.name]} onclick={() => act(p.name, 'close', { force: true })}>
-								Force stop
+							<button class="btn" disabled={isRunning(p.name)} onclick={() => openTailscale(p.name)}>
+								{isRunning(p.name) ? 'Registering…' : 'Register'}
 							</button>
 						{/if}
 					</div>
-					{#if note[p.name]}
-						<p class="note" class:bad={!note[p.name].ok} role="status">
-							{note[p.name].text}
-							{#if note[p.name].url}
-								<a class="login-link" href={note[p.name].url} target="_blank" rel="noopener">
-									open login ↗
-								</a>
-							{/if}
-						</p>
+				{/if}
+			{/snippet}
+
+			{#snippet actions(p)}
+				{#if p.state === 'absent'}
+					<button disabled={isRunning(p.name)} onclick={() => openProject(p)}>
+						{isRunning(p.name) ? 'Opening…' : 'Open'}
+					</button>
+				{:else}
+					<!-- Close only where there is something to reclaim. On a stopped
+					     container it would close a leftover window and nothing else —
+					     a button named after RAM, with no RAM to free. -->
+					{#if p.state === 'running'}
+						<button
+							disabled={!!busy[p.name]}
+							title={p.live_session ? `live: ${p.live_evidence}` : 'stop the container'}
+							onclick={() => act(p.name, 'close')}
+						>
+							{busy[p.name] === 'close' ? 'Closing…' : 'Close'}
+						</button>
 					{/if}
-				</li>
-			{/each}
-		</ul>
+					{#if canOpen(p)}
+						<button
+							disabled={isRunning(p.name)}
+							title="reopen and open a VS Code window (reuses a running container)"
+							onclick={() => openProject(p)}
+						>
+							{isRunning(p.name) ? 'Opening…' : 'Open'}
+						</button>
+					{/if}
+					<!-- Pull origin and recreate the container, so a fix already
+					     pushed to GitHub lands in the running devcontainer. Shown
+					     even while the window is open, which is exactly when you
+					     need it. -->
+					<button
+						disabled={isRunning(p.name)}
+						title="pull origin, then recreate the container"
+						onclick={() => rebuild(p.name)}
+					>
+						{isRunning(p.name) ? 'Rebuilding…' : 'Rebuild'}
+					</button>
+				{/if}
+				{#if offer[p.name]}
+					<button class="warn" disabled={!!busy[p.name]} onclick={() => act(p.name, 'close', { force: true })}>
+						Force stop
+					</button>
+				{/if}
+			{/snippet}
+
+			{#snippet note(p)}
+				{#if answers[p.name]}
+					<p class="note" class:bad={!answers[p.name].ok} role="status">
+						{answers[p.name].text}
+						{#if answers[p.name].url}
+							<a href={answers[p.name].url} target="_blank" rel="noopener">open login ↗</a>
+						{/if}
+					</p>
+				{/if}
+			{/snippet}
+		</ActionList>
 	{/if}
-
 </main>
 
 <!-- The Provision picker opens in its own browser window (`?provision=1`), the
@@ -499,37 +501,30 @@
      starting a provision closes it and the build log takes the screen. -->
 {#if pickerOpen}
 	<section class="provision-view" aria-label="Provision a repo">
-		<div class="job-head">
+		<div class="sheet-head">
 			<strong>Provision a repo</strong>
-			<button onclick={() => (pickerOpen = false)}>Close</button>
+			<button class="btn" onclick={() => (pickerOpen = false)}>Close</button>
 		</div>
 		{#if reposError}
-			<p class="note bad">{reposError}</p>
+			<p class="notice bad">{reposError}</p>
 		{/if}
 		{#if repos === null}
 			<p class="muted">Loading repositories…</p>
 		{:else}
 			<input type="search" bind:value={repoFilter} placeholder="Filter repositories…" />
-			{#if filteredRepos.length === 0}
-				<p class="muted">Nothing here that has no workspace yet.</p>
-			{:else}
-				<ul class="repos">
-					{#each filteredRepos as r (r)}
-						<li>
-							<span class="repo-name">{r}</span>
-							<button
-								disabled={isRunning(r)}
-								onclick={() => {
-									pickerOpen = false;
-									startJob('/api/provision', { repo: r }, r);
-								}}
-							>
-								{isRunning(r) ? 'Cloning…' : 'Provision'}
-							</button>
-						</li>
-					{/each}
-				</ul>
-			{/if}
+			<ActionList items={repoRows} emptyMessage="Nothing here that has no workspace yet.">
+				{#snippet actions(row)}
+					<button
+						disabled={isRunning(row.name)}
+						onclick={() => {
+							pickerOpen = false;
+							startJob('/api/provision', { repo: row.name }, row.name);
+						}}
+					>
+						{isRunning(row.name) ? 'Cloning…' : 'Provision'}
+					</button>
+				{/snippet}
+			</ActionList>
 		{/if}
 	</section>
 {/if}
@@ -537,63 +532,69 @@
 <!-- The job is a sibling of <main>, not a child: it is a full-screen view, so
      it must not inherit main's pull-to-refresh touch handlers (a drag on the
      log would otherwise read as a pull), and it takes the whole screen for
-     minutes at a time. -->
+     minutes at a time. The pane, its head and its action row come from
+     `log-view`; the full-screen frame is this page's, because whether output
+     takes the screen is a decision about a phone. -->
 {#if job}
 	<section class="job" class:bad={job.state === 'failed'} aria-label="Job output">
-		<div class="job-head">
-			<strong>{job.kind || 'job'} {job.target}</strong>
-			<span class="state" class:running={job.state === 'done'} class:stopped={job.state === 'running'}>
-				{job.state}
-			</span>
-		</div>
-		{#if job.error}
-			<p class="note bad">{job.error}</p>
-		{/if}
-		{#if job.attention}
-			<p class="attention" role="alert">
-				<span>{job.attention.detail || 'Action needed to continue'}</span>
-				{#if job.attention.url}
-					<a class="login-link" href={job.attention.url} target="_blank" rel="noopener">
-						Authenticate on Tailscale ↗
-					</a>
+		<LogView
+			title={`${job.kind || 'job'} ${job.target ?? ''}`.trim()}
+			state={job.state}
+			tone={job.state}
+			lines={job.log ?? []}
+			emptyMessage="Waiting for output…"
+			bind:element={logEl}
+			onscroll={onLogScroll}
+		>
+			{#snippet notice()}
+				{#if job.error}
+					<p class="notice bad">{job.error}</p>
 				{/if}
-			</p>
-		{/if}
-		{#if job.state === 'running'}
-			<p class="note">
 				{#if job.attention}
-					Waiting for you to authenticate on the tailnet — the job continues by itself once it is done.
-				{:else}
-					Running — a first container build takes minutes. The log follows the tail; scroll up to read back.
+					<!-- A job paused on something only the phone can do — the
+					     Tailscale login. Louder than a note, because the job does
+					     not move until it is done, and the link must be a real tap
+					     target, not text in the log. -->
+					<p class="notice warn" role="alert">
+						<span>{job.attention.detail || 'Action needed to continue'}</span>
+						{#if job.attention.url}
+							<a class="login-link" href={job.attention.url} target="_blank" rel="noopener">
+								Authenticate on Tailscale ↗
+							</a>
+						{/if}
+					</p>
 				{/if}
-			</p>
-		{/if}
-		{#if job.log && job.log.length}
-			<pre bind:this={logEl} onscroll={onLogScroll}>{job.log.join('\n')}</pre>
-		{:else}
-			<p class="muted">Waiting for output…</p>
-		{/if}
-		<div class="job-actions">
-			{#if job.job_id}
-				<a class="btn" href={`?job=${job.job_id}`} target="_blank" rel="noopener">New window</a>
-			{/if}
-			{#if job.state !== 'running'}
-				<button onclick={() => (job = null)}>Dismiss</button>
-			{/if}
-		</div>
+				{#if job.state === 'running'}
+					{#if job.attention}
+						<p class="hint">
+							Waiting for you to authenticate on the tailnet — the job continues by itself once
+							it is done.
+						</p>
+					{:else}
+						<p class="hint">
+							Running — a first container build takes minutes. The log follows the tail; scroll
+							up to read back.
+						</p>
+					{/if}
+				{/if}
+			{/snippet}
+
+			{#snippet actions()}
+				{#if job.job_id}
+					<a class="btn" href={`?job=${job.job_id}`} target="_blank" rel="noopener">New window</a>
+				{/if}
+				{#if job.state !== 'running'}
+					<button onclick={() => (job = null)}>Dismiss</button>
+				{/if}
+			{/snippet}
+		</LogView>
 	</section>
 {/if}
 
 <style>
-	:global(body) {
-		margin: 0;
-		font: 16px/1.4 -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-		background: #0f172a;
-		color: #e2e8f0;
-		/* iOS Safari inflates text in landscape otherwise; the sizes here are
-		   already chosen for a phone. */
-		-webkit-text-size-adjust: 100%;
-	}
+	/* The theme owns colour, type and the base elements now (web/src/app.css).
+	   What is left here is this page's layout: a phone column, the fixed views,
+	   and the two places the app's own controls need the house --tap. */
 	main {
 		max-width: 42rem;
 		margin: 0 auto;
@@ -618,223 +619,65 @@
 	}
 	.stamp {
 		font-size: 0.8rem;
-		color: #94a3b8;
-		font-variant-numeric: tabular-nums;
+		color: var(--ink-muted);
 	}
-	button {
-		min-width: 2.75rem;
-		min-height: 2.75rem;
+	/* The two controls that are the page's own rather than a block's: the
+	   refresh button and the picker's Close. Both are pressed with a thumb. */
+	.icon {
+		min-width: var(--tap);
+		min-height: var(--tap);
 		font-size: 1.2rem;
-		border: 1px solid #3b4152;
-		background: #161923;
-		border-radius: 0.6rem;
 	}
-	button:disabled {
-		opacity: 0.5;
-	}
-	.error {
-		background: #3a1518;
-		border: 1px solid #7f2d2d;
-		color: #fca5a5;
-		padding: 0.75rem;
-		border-radius: 0.6rem;
-	}
-	.muted {
-		color: #94a3b8;
-	}
-	.projects {
-		list-style: none;
-		margin: 0;
-		padding: 0;
+	.provision-top {
 		display: flex;
-		flex-direction: column;
-		gap: 0.5rem;
-	}
-	.project {
-		background: #161923;
-		border: 1px solid #3b4152;
-		border-radius: 0.75rem;
-		padding: 0.75rem 0.9rem;
-		/* M2 turns each of these into a tap target; reserve the height now. */
-		min-height: 2.75rem;
-	}
-	.top {
-		display: flex;
-		align-items: baseline;
-		justify-content: space-between;
-		gap: 0.5rem;
-	}
-	.name {
-		font-weight: 600;
-	}
-	.right {
-		display: inline-flex;
 		align-items: center;
-		gap: 0.5rem;
+		justify-content: center;
+		box-sizing: border-box;
+		width: 100%;
+		min-height: var(--tap);
+		margin-bottom: 0.75rem;
+		font-size: 0.95rem;
 	}
-	.mem {
-		font-size: 0.8rem;
-		color: #94a3b8;
-		font-variant-numeric: tabular-nums;
+	.strip-slot {
+		margin-bottom: 1rem;
 	}
-	.state {
+	/* The ssh target, selectable: over plain http (the tailnet) there is no
+	   clipboard API, so a long-press select is how this gets copied on a phone. */
+	.ssh {
 		font-size: 0.75rem;
-		padding: 0.1rem 0.5rem;
-		border-radius: 999px;
-		background: #3b4152;
-		color: #cbd5e1;
-	}
-	.state.running {
-		background: #17321f;
-		color: #5ee08a;
-	}
-	.state.stopped {
-		background: #3a2f10;
-		color: #f0c14b;
-	}
-	.badges {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.35rem;
-		margin-top: 0.4rem;
-	}
-	.badge {
-		font-size: 0.72rem;
-		padding: 0.12rem 0.45rem;
-		border-radius: 0.35rem;
-		background: #1f2534;
-		color: #cbd5e1;
-		max-width: 100%;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+		max-width: 100%;
+		user-select: all;
+		-webkit-user-select: all;
 	}
-	.badge.live {
-		background: #17321f;
-		color: #5ee08a;
-	}
-	.badge.window {
-		background: #17293d;
-		color: #60a5fa;
-	}
-	.badge.muted-badge {
-		color: #6b7280;
-	}
-	.badge.tailnet {
-		background: #10241f;
-		color: #34d399;
-	}
-	.badge.warn-badge {
-		background: #3a2f10;
-		color: #f0c14b;
-	}
-	/* How to reach a running container. Kept on its own line under the badges
-	   so the ssh target can be long without shoving the state pill around. */
 	.conn {
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
 		gap: 0.35rem;
-		margin-top: 0.4rem;
 	}
-	.pill {
-		display: inline-flex;
-		align-items: center;
-		font-size: 0.78rem;
-		line-height: 1;
-		padding: 0.45rem 0.7rem;
-		min-height: 2.25rem;
-		border-radius: 0.5rem;
-		border: 1px solid #3b4152;
-		background: #1f2534;
-		color: #e2e8f0;
-		text-decoration: none;
+	.conn :global(.btn) {
+		min-height: var(--tap);
 	}
-	.pill.register {
-		border: 1px solid #7f6d2d;
-		background: #2c2610;
-		color: #f0c14b;
+	.note {
+		margin: 0;
+		font-size: 0.8rem;
+		color: var(--ink-muted);
 	}
-	.ssh {
-		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-		font-size: 0.75rem;
-		padding: 0.3rem 0.45rem;
-		border-radius: 0.4rem;
-		background: #0b0e17;
-		color: #cbd5e1;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		max-width: 100%;
-		/* Selectable: over plain http (the tailnet) there is no clipboard API,
-		   so a long-press select is how this gets copied on a phone. */
-		user-select: all;
-		-webkit-user-select: all;
+	.note.bad {
+		color: var(--bad);
 	}
 	.login-link {
 		margin-left: 0.4rem;
-		color: #93c5fd;
-	}
-	.strip-slot {
-		margin-bottom: 1rem;
-	}
-	.actions {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.5rem;
-		margin-top: 0.6rem;
-	}
-	.actions button {
-		min-width: 4.5rem;
-		min-height: 2.75rem;
-		padding: 0 0.9rem;
-		font-size: 0.95rem;
-		border: 1px solid #3b4152;
-		background: #161923;
-		border-radius: 0.6rem;
-		color: inherit;
-	}
-	.actions button.wide {
-		flex: 1;
-	}
-	.actions button.warn {
-		border-color: #7f2d2d;
-		background: #3a1518;
-		color: #fca5a5;
-	}
-	.note {
-		margin: 0.5rem 0 0;
-		font-size: 0.8rem;
-		color: #94a3b8;
-	}
-	.note.bad {
-		color: #fca5a5;
-	}
-	/* A job that is paused on something only the phone can do — the Tailscale
-	   login. Louder than a note, because the job does not move until it is
-	   done, and the link must be a real tap target, not text in the log. */
-	.attention {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		gap: 0.5rem;
-		margin: 0.6rem 0 0;
-		padding: 0.6rem 0.7rem;
-		font-size: 0.85rem;
-		border: 1px solid #7f6d2d;
-		background: #2c2610;
-		color: #f0c14b;
-		border-radius: 0.5rem;
-	}
-	.attention .login-link {
-		margin-left: 0;
 		font-weight: 600;
 	}
 	.pull {
 		margin: 0 0 0.5rem;
 		text-align: center;
 		font-size: 0.8rem;
-		color: #94a3b8;
+		color: var(--ink-muted);
 	}
 	/* The job view takes the whole screen: a first build is minutes of output
 	   and the phone has nothing else to do, so it gets the room rather than
@@ -846,74 +689,15 @@
 		margin: 0;
 		display: flex;
 		flex-direction: column;
-		background: #161923;
+		gap: 0;
+		background: var(--bg);
 		border: none;
 		border-radius: 0;
 		padding: calc(0.9rem + env(safe-area-inset-top)) 1rem
 			calc(0.9rem + env(safe-area-inset-bottom));
 	}
 	.job.bad {
-		background: #3a1518;
-	}
-	.job-head {
-		display: flex;
-		align-items: baseline;
-		justify-content: space-between;
-		gap: 0.5rem;
-		flex: 0 0 auto;
-	}
-	.job pre {
-		flex: 1 1 auto;
-		min-height: 6rem;
-		margin: 0.6rem 0 0;
-		padding: 0.6rem;
-		overflow: auto;
-		background: #0b0e17;
-		color: #e2e8f0;
-		border-radius: 0.5rem;
-		font-size: 0.8rem;
-		line-height: 1.4;
-		white-space: pre-wrap;
-		word-break: break-word;
-		overscroll-behavior: contain;
-		-webkit-overflow-scrolling: touch;
-	}
-	.job-actions {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.5rem;
-		margin-top: 0.6rem;
-		flex: 0 0 auto;
-	}
-	.job-actions .btn {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		min-width: 4.5rem;
-		min-height: 2.75rem;
-		padding: 0 0.9rem;
-		font-size: 0.95rem;
-		border: 1px solid #3b4152;
-		background: #161923;
-		color: inherit;
-		border-radius: 0.6rem;
-		text-decoration: none;
-	}
-	.provision-top {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		box-sizing: border-box;
-		width: 100%;
-		min-height: 2.75rem;
-		margin-bottom: 0.75rem;
-		padding: 0 0.9rem;
-		font-size: 0.95rem;
-		border: 1px solid #3b4152;
-		background: #161923;
-		color: inherit;
-		border-radius: 0.6rem;
-		text-decoration: none;
+		background: var(--bad-bg);
 	}
 	.provision-view {
 		position: fixed;
@@ -921,50 +705,25 @@
 		z-index: 40;
 		display: flex;
 		flex-direction: column;
+		gap: 0.6rem;
 		margin: 0;
-		padding: calc(0.9rem + env(safe-area-inset-top)) 1rem calc(0.9rem + env(safe-area-inset-bottom));
-		background: #161923;
+		padding: calc(0.9rem + env(safe-area-inset-top)) 1rem
+			calc(0.9rem + env(safe-area-inset-bottom));
+		background: var(--bg);
 		overflow: auto;
+	}
+	.sheet-head {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 0.5rem;
+	}
+	.sheet-head :global(.btn) {
+		min-height: var(--tap);
 	}
 	input[type='search'] {
 		width: 100%;
 		box-sizing: border-box;
-		margin-top: 0.6rem;
-		padding: 0.6rem 0.7rem;
-		min-height: 2.75rem;
-		font-size: 1rem;
-		border: 1px solid #3b4152;
-		border-radius: 0.6rem;
-		background: #161923;
-		color: inherit;
-	}
-	.repos {
-		list-style: none;
-		margin: 0.6rem 0 0;
-		padding: 0;
-		display: flex;
-		flex-direction: column;
-		gap: 0.4rem;
-	}
-	.repos li {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 0.6rem;
-		background: #161923;
-		border: 1px solid #3b4152;
-		border-radius: 0.6rem;
-		padding: 0.5rem 0.6rem;
-	}
-	.repo-name {
-		font-size: 0.9rem;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	.repos button {
-		min-width: 5.5rem;
-		min-height: 2.75rem;
-		font-size: 0.9rem;
+		min-height: var(--tap);
 	}
 </style>
