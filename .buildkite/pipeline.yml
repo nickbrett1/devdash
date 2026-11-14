@@ -34,6 +34,10 @@ steps:
       - npx vitest run --coverage
       - npm run build
       - |
+        # Back to the repo root: the steps above cd'd into web/ for npm, and
+        # both check scripts work from the root (the pin is ./.nb-registry.json
+        # and they look for web/src/lib/components/nb/ from there).
+        cd ..
         # The @nb blocks in web/src/lib/components/nb/ are copies, and a copy
         # nobody checks is the defect this step exists for: a block fix reaches
         # a consumer only when CI compares the vendored bytes to the release the
