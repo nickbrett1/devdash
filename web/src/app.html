@@ -7,10 +7,26 @@
          sends the token cookie with it, and start_url "/" keeps the secret out
          of the installed app's URL — the cookie is the credential. -->
     <link rel="manifest" href="%sveltekit.assets%/manifest.webmanifest" />
-    <link rel="apple-touch-icon" href="%sveltekit.assets%/apple-touch-icon.png" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#0f172a" />
-    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#161923" />
+    <link
+      rel="apple-touch-icon"
+      href="%sveltekit.assets%/apple-touch-icon.png"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- No `viewport-fit=cover`: with it the web view extends under the iOS
+         status bar and whatever the system paints in that band lands on this
+         app's own top bar. Without it the viewport starts below the band and
+         the top edge is ours alone. See ui-registry README, "What actually
+         fixed it: the viewport, not the colour". -->
+    <meta
+      name="theme-color"
+      media="(prefers-color-scheme: light)"
+      content="#0f172a"
+    />
+    <meta
+      name="theme-color"
+      media="(prefers-color-scheme: dark)"
+      content="#161923"
+    />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="devdash" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
