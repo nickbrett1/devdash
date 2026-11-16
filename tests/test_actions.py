@@ -218,7 +218,7 @@ def test_register_tailscale_registers_waits_and_starts_the_agent(rows, monkeypat
                         lambda cid, host: {"started": True, "url": "https://login.tailscale.com/a/x",
                                            "detail": "authenticate"})
     monkeypatch.setattr(actions.tailnet, "wait_connected", lambda cid, timeout, **kw: True)
-    monkeypatch.setattr(actions, "start_agent", lambda cid, ws: (True, "ok"))
+    monkeypatch.setattr(actions, "start_agent", lambda cid, ws, log=None: (True, "ok"))
     out = actions.register_tailscale("acme")
     assert out["name"] == "acme" and out["started"] is True
     assert out["state"] == "connected" and out["agent_started"] is True
@@ -317,7 +317,7 @@ def test_gate_restarts_the_post_start_hook_when_it_had_to_start_the_daemon(rows,
                         lambda cid, timeout=15.0: "connected")
     seen = {}
     monkeypatch.setattr(actions, "start_agent",
-                        lambda cid, ws: (seen.update(agent=ws) or True, "hook re-ran"))
+                        lambda cid, ws, log=None: (seen.update(agent=ws) or True, "hook re-ran"))
     out = actions.tailscale_gate(
         "acme", lambda line: seen.setdefault("log", []).append(line),
         lambda payload: seen.update(attention=payload))
@@ -341,7 +341,7 @@ def test_gate_waits_for_a_starting_daemon_then_registers(rows, monkeypatch):
                                            "detail": "authenticate to finish"})
     monkeypatch.setattr(actions.tailnet, "wait_connected",
                         lambda cid, timeout, on_wait=None: True)
-    monkeypatch.setattr(actions, "start_agent", lambda cid, ws: (True, "agent started"))
+    monkeypatch.setattr(actions, "start_agent", lambda cid, ws, log=None: (True, "agent started"))
     seen = {}
     out = actions.tailscale_gate(
         "acme", lambda line: seen.setdefault("log", []).append(line),
@@ -360,7 +360,7 @@ def test_gate_treats_a_silent_register_that_connected_as_success(rows, monkeypat
     monkeypatch.setattr(actions.tailnet, "register",
                         lambda cid, host: {"started": False, "url": None,
                                            "detail": "acme reconnected to the tailnet"})
-    monkeypatch.setattr(actions, "start_agent", lambda cid, ws: (True, "agent started"))
+    monkeypatch.setattr(actions, "start_agent", lambda cid, ws, log=None: (True, "agent started"))
     out = actions.tailscale_gate("acme", lambda line: None)
     assert out["state"] == "connected" and out["connected"] is True
     assert out["url"] is None and out["agent_started"] is True
@@ -389,7 +389,7 @@ def test_gate_registers_waits_then_starts_the_agent(rows, monkeypatch):
     monkeypatch.setattr(actions.tailnet, "wait_connected", lambda cid, timeout, **kw: True)
     started = {}
     monkeypatch.setattr(actions, "start_agent",
-                        lambda cid, ws: started.update(cid=cid, ws=ws) or (True, "ok"))
+                        lambda cid, ws, log=None: started.update(cid=cid, ws=ws) or (True, "ok"))
     seen = {}
     out = actions.tailscale_gate(
         "acme",
@@ -441,6 +441,21 @@ def test_provision_carries_the_tailscale_result(rows, monkeypatch):
     assert out["tailscale"] == {"state": "connected"}
 
 
+class _fake_proc:
+    """A Popen stand-in: the hook's output lines, then its exit code."""
+
+    def __init__(self, lines=(), code=0):
+        self.stdout = iter(line + "\n" for line in lines)
+        self._code = code
+        self.killed = False
+
+    def wait(self):
+        return self._code
+
+    def kill(self):
+        self.killed = True
+
+
 def test_start_agent_reruns_the_hook_as_the_container_user(monkeypatch, tmp_path):
     """The hook must run as the container's own user with the right HOME — this
     repo's is `node`, and `docker exec -u vscode` would simply fail. With no
@@ -461,9 +476,16 @@ def test_start_agent_reruns_the_hook_as_the_container_user(monkeypatch, tmp_path
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     monkeypatch.setattr(actions.subprocess, "run", fake_run)
+    popen_calls = []
+
+    def fake_popen(argv, **kw):
+        popen_calls.append(argv)
+        return _fake_proc()
+
+    monkeypatch.setattr(actions.subprocess, "Popen", fake_popen)
     ok, detail = actions.start_agent("acme-dev", str(ws))
     assert ok is True and "post-start" in detail
-    hook = calls[-1]
+    hook = popen_calls[-1]
     assert hook[2:4] == ["-u", "node"]
     assert "HOME=/home/node" in hook
     assert hook[hook.index("-w") + 1] == "/workspaces/acme"
@@ -515,10 +537,29 @@ def test_start_agent_reports_a_failed_hook(monkeypatch, tmp_path):
     (ws / ".devcontainer").mkdir(parents=True)
     (ws / ".devcontainer" / "devcontainer.json").write_text('{"postStartCommand": "boom"}')
     monkeypatch.setattr(actions.subprocess, "run",
-                        lambda argv, **kw: subprocess.CompletedProcess(argv, 3, "", "agent: no address"))
+                        lambda argv, **kw: subprocess.CompletedProcess(argv, 0, "", ""))
+    monkeypatch.setattr(actions.subprocess, "Popen",
+                        lambda argv, **kw: _fake_proc(["starting", "agent: no address"], 3))
     ok, detail = actions.start_agent("acme-dev", str(ws))
     assert ok is False
     assert "exited 3" in detail and "no address" in detail
+
+
+def test_start_agent_streams_the_hook_output(monkeypatch, tmp_path):
+    """A hook that installs things can take minutes; the job log must show its
+    lines as they arrive, not only a summary at the end."""
+    ws = tmp_path / "acme"
+    (ws / ".devcontainer").mkdir(parents=True)
+    (ws / ".devcontainer" / "devcontainer.json").write_text(
+        '{"remoteUser": "node", "postStartCommand": "bash /w/hook.sh"}')
+    monkeypatch.setattr(actions.subprocess, "run",
+                        lambda argv, **kw: subprocess.CompletedProcess(argv, 0, "/home/node\n", ""))
+    monkeypatch.setattr(actions.subprocess, "Popen",
+                        lambda argv, **kw: _fake_proc(["sshd: started", "agent: up"], 0))
+    logs = []
+    ok, _ = actions.start_agent("acme-dev", str(ws), on_log=logs.append)
+    assert ok is True
+    assert logs == ["[hook] sshd: started", "[hook] agent: up"]
 
 
 def test_start_agent_without_a_hook_is_reported_not_guessed(tmp_path):

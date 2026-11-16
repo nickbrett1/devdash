@@ -17,6 +17,7 @@ with no terminal:
 import os
 import shlex
 import subprocess
+import threading
 
 from devopen import config as devopen_config
 from devopen import opener
@@ -242,7 +243,7 @@ def tailscale_gate(name, on_log, on_attention=None, wait=None, force_agent=False
             # container is on the tailnet. Without this, the gate returning
             # None for a "connected" node would leave the container reachable
             # only if something else happened to start those.
-            started, detail = start_agent(cid, container["workspace"])
+            started, detail = start_agent(cid, container["workspace"], on_log)
             on_log(f"[devdash] agent: {detail}")
             return {"state": "connected", "url": None, "connected": True,
                     "agent_started": started, "detail": detail}
@@ -266,7 +267,7 @@ def tailscale_gate(name, on_log, on_attention=None, wait=None, force_agent=False
     if state == "connected":
         if not force_agent:
             return None
-        started, detail = start_agent(cid, container["workspace"])
+        started, detail = start_agent(cid, container["workspace"], on_log)
         on_log(f"[devdash] agent: {detail}")
         return {"state": "connected", "url": None, "connected": True,
                 "agent_started": started, "detail": detail}
@@ -278,7 +279,7 @@ def tailscale_gate(name, on_log, on_attention=None, wait=None, force_agent=False
         # No URL is not the same as no registration: a node with persisted
         # state reconnects as soon as its daemon starts, with nothing for the
         # user to tap. Ask the container instead of reporting a failure.
-        started, detail = start_agent(cid, container["workspace"])
+        started, detail = start_agent(cid, container["workspace"], on_log)
         on_log(f"[devdash] agent: {detail}")
         return {"state": "connected", "url": None, "connected": True,
                 "agent_started": started, "detail": result["detail"]}
@@ -312,13 +313,16 @@ def tailscale_gate(name, on_log, on_attention=None, wait=None, force_agent=False
                 "detail": "still waiting for the tailnet login"}
 
     on_log("[devdash] tailscale: authenticated.")
-    started, detail = start_agent(cid, container["workspace"])
+    started, detail = start_agent(cid, container["workspace"], on_log)
     on_log(f"[devdash] agent: {detail}")
     return {"state": "connected", "url": url, "connected": True,
             "agent_started": started, "detail": detail}
 
 
-def start_agent(container_id, workspace):
+HOOK_TIMEOUT = 300
+
+
+def start_agent(container_id, workspace, on_log=None):
     """Re-run the container's post-start hook so its agent starts.
 
     The agent is started by `postStartCommand`, which `devcontainer up` already
@@ -332,6 +336,10 @@ def start_agent(container_id, workspace):
     `remoteUser` default — this repo's user is `node`, and `docker exec -u
     vscode` would fail while `-u node` without HOME would write the agent's
     config to the wrong place.
+
+    `on_log` streams the hook's own output as it runs, one `[hook]` line each.
+    A hook that installs or updates things can take minutes, and a job log that
+    shows only the summary is indistinguishable from a hang.
     """
     config = _devcontainer_config(workspace)
     command = _post_start_command(config)
@@ -348,12 +356,41 @@ def start_agent(container_id, workspace):
         argv += ["-w", workdir]
     argv += [container_id] + command
     try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=300, check=False)
-    except (OSError, subprocess.SubprocessError) as e:
+        proc = subprocess.Popen(argv, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True, bufsize=1)
+    except OSError as e:
         return False, f"could not re-run the post-start hook: {e}"
-    if r.returncode != 0:
-        last = ((r.stderr or r.stdout or "").strip().splitlines() or [""])[-1]
-        return False, f"the post-start hook exited {r.returncode}" + (f": {last}" if last else "")
+
+    # Read the pipe as it fills (that is what streaming means) and stop it from
+    # holding the job open forever: a watchdog, because wait(timeout=...) cannot
+    # interrupt a blocking read.
+    timed_out = threading.Event()
+
+    def _kill():
+        timed_out.set()
+        proc.kill()
+
+    timer = threading.Timer(HOOK_TIMEOUT, _kill)
+    timer.daemon = True
+    timer.start()
+    lines = []
+    try:
+        for raw in proc.stdout:
+            line = raw.rstrip()
+            if not line:
+                continue
+            lines.append(line)
+            del lines[:-20]  # keep the tail for the failure detail
+            if on_log:
+                on_log(f"[hook] {line}")
+    finally:
+        timer.cancel()
+    code = proc.wait()
+    if timed_out.is_set():
+        return False, f"the post-start hook was still running after {HOOK_TIMEOUT}s — stopped it"
+    if code != 0:
+        last = lines[-1] if lines else ""
+        return False, f"the post-start hook exited {code}" + (f": {last}" if last else "")
     return True, "re-ran the post-start hook so the container agent starts"
 
 
