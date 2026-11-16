@@ -158,6 +158,37 @@ _START_DAEMON = (
 )
 
 
+def ensure_daemon(container_id, timeout=15.0):
+    """Start tailscaled if it is not running, then wait for it to answer.
+
+    Returns the state afterwards: connected | logged_out | absent.
+
+    `wait_for_tailscale` can only wait for a daemon somebody else started, and
+    two ordinary paths leave nobody to start it:
+
+      * the container was merely `docker start`ed (devopen's reuse path), and a
+        plain start does not run `postStartCommand` — the repo's own hook;
+      * devdash opens with `tailscale=False` when no authkey is configured, so
+        devopen's daemon start is skipped too.
+
+    In both cases the node's state is usually persisted in the volume, so
+    starting the daemon reconnects with no login at all. Hence: start, then
+    wait. Never raises — a container without tailscale is `absent`, not an
+    error.
+    """
+    if not present(container_id):
+        return "absent"
+    state = facts(container_id)["state"]
+    if state != "absent":
+        return state
+    try:
+        _docker(["exec", "-u", "root", container_id, "sh", "-c", _START_DAEMON],
+                timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return "absent"
+    return wait_for_tailscale(container_id, timeout=timeout)
+
+
 def _remote_user(workspace):
     """remoteUser from the workspace's devcontainer config (default 'vscode').
 
@@ -294,15 +325,10 @@ def register(container_id, host, wait=8.0, daemon_wait=10.0):
     # runs, and needs no browser at all. That is the ordinary case after a
     # container restart, and `tailscale up` against a dead daemon would only
     # fail, so start the daemon first and give it a moment to answer.
-    if present(container_id):
-        try:
-            _docker(["exec", "-u", "root", container_id, "sh", "-c", _START_DAEMON],
-                    timeout=20)
-        except (OSError, subprocess.SubprocessError):
-            pass  # the `up` below reports the real failure if the daemon is gone
-        if wait_for_tailscale(container_id, timeout=daemon_wait) == "connected":
-            return {"started": False, "url": None,
-                    "detail": f"{host} reconnected to the tailnet"}
+    if present(container_id) and \
+            ensure_daemon(container_id, timeout=daemon_wait) == "connected":
+        return {"started": False, "url": None,
+                "detail": f"{host} reconnected to the tailnet"}
 
     # A previous detached `up` may still be waiting for its login URL; a second
     # one refuses to run ("another tailscale up is running"), so clear it first.

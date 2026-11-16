@@ -127,10 +127,62 @@ def test_wait_for_tailscale_gives_up_after_the_timeout(monkeypatch):
     assert tailnet.wait_for_tailscale("c1", timeout=0) == "absent"
 
 
+def test_ensure_daemon_starts_a_daemon_nobody_started(monkeypatch):
+    """The genproj case: the container was merely `docker start`ed, so the
+    repo's postStartCommand never ran and there is no tailscaled process.
+    Waiting alone can never fix that — start it, and the persisted node state
+    reconnects with no login."""
+    states = iter(["absent", "connected"])
+    monkeypatch.setattr(tailnet, "facts",
+                        lambda cid: {"state": next(states), "ip": "100.0.0.1"})
+    monkeypatch.setattr(tailnet, "present", lambda cid: True)
+    calls = []
+
+    def fake_docker(args, timeout=15):
+        calls.append(args)
+        return _completed("")
+
+    monkeypatch.setattr(tailnet, "_docker", fake_docker)
+    monkeypatch.setattr(tailnet.time, "sleep", lambda seconds: None)
+
+    assert tailnet.ensure_daemon("c1") == "connected"
+    assert any(args[-1] == tailnet._START_DAEMON for args in calls)
+
+
+def test_ensure_daemon_does_not_touch_a_daemon_that_is_answering(monkeypatch):
+    monkeypatch.setattr(tailnet, "facts", lambda cid: {"state": "logged_out", "ip": None})
+    monkeypatch.setattr(tailnet, "present", lambda cid: True)
+    calls = []
+    monkeypatch.setattr(tailnet, "_docker",
+                        lambda args, timeout=15: calls.append(args) or _completed(""))
+    assert tailnet.ensure_daemon("c1") == "logged_out"
+    assert calls == []
+
+
+def test_ensure_daemon_is_absent_without_tailscale(monkeypatch):
+    monkeypatch.setattr(tailnet, "present", lambda cid: False)
+    calls = []
+    monkeypatch.setattr(tailnet, "_docker",
+                        lambda args, timeout=15: calls.append(args) or _completed(""))
+    assert tailnet.ensure_daemon("c1") == "absent"
+    assert calls == []
+
+
+def test_ensure_daemon_degrades_when_the_start_fails(monkeypatch):
+    monkeypatch.setattr(tailnet, "present", lambda cid: True)
+    monkeypatch.setattr(tailnet, "facts", lambda cid: {"state": "absent", "ip": None})
+
+    def boom(args, timeout=15):
+        raise FileNotFoundError("docker")
+
+    monkeypatch.setattr(tailnet, "_docker", boom)
+    assert tailnet.ensure_daemon("c1") == "absent"
+
+
 def test_register_starts_the_daemon_and_accepts_a_self_reconnect(monkeypatch):
     """A node with persisted state reconnects as soon as tailscaled runs — no
     login URL, nothing to tap, and `tailscale up` was never needed."""
-    states = iter(["logged_out", "connected", "connected"])
+    states = iter(["logged_out", "absent", "connected"])
     monkeypatch.setattr(tailnet, "facts", lambda cid: {"state": next(states), "ip": None})
     monkeypatch.setattr(tailnet, "present", lambda cid: True)
     started = {"daemon": False, "up": False}

@@ -226,12 +226,28 @@ def tailscale_gate(name, on_log, on_attention=None, wait=None, force_agent=False
     state = tailnet.facts(cid)["state"]
     if state == "absent" and tailnet.present(cid):
         # Absent is not final: the container has the binary, but tailscaled is
-        # usually still starting behind `devcontainer up`. Reading it once and
-        # giving up (or, worse, letting the old text probe call it connected)
-        # is how an open used to finish without the container ever reaching the
-        # tailnet. Wait for the daemon, then decide.
-        on_log("[devdash] tailscale: waiting for the daemon to answer")
-        state = tailnet.wait_for_tailscale(cid)
+        # usually still starting behind `devcontainer up` — or was never
+        # started at all. Waiting alone cannot fix the second case, and the
+        # second case is ordinary: devopen reuses a stopped container with
+        # plain `docker start` (which does not run postStartCommand), and
+        # devdash passes tailscale=False when no authkey is configured, so
+        # devopen's own daemon start is skipped too. Start it, then wait.
+        on_log("[devdash] tailscale: starting tailscaled in the container")
+        state = tailnet.ensure_daemon(cid)
+        if state == "connected":
+            # The daemon was not running, which is what a plain `docker start`
+            # leaves behind (it does not run postStartCommand) — so the rest of
+            # that hook, sshd/socat/the container agent, did not run either.
+            # postStartCommand is idempotent, so re-run it now that the
+            # container is on the tailnet. Without this, the gate returning
+            # None for a "connected" node would leave the container reachable
+            # only if something else happened to start those.
+            started, detail = start_agent(cid, container["workspace"])
+            on_log(f"[devdash] agent: {detail}")
+            return {"state": "connected", "url": None, "connected": True,
+                    "agent_started": started, "detail": detail}
+        if state == "absent":
+            on_log("[devdash] tailscale: the daemon is still not answering")
     if state == "absent":
         # Do not fall through to `tailscale up` (with no daemon to talk to it
         # would only fail), but do not return None into silence either: the

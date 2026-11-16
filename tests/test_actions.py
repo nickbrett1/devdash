@@ -265,8 +265,8 @@ def test_gate_speaks_when_tailscale_is_not_up_yet(rows, monkeypatch):
     monkeypatch.setattr(actions.tailnet, "facts",
                         lambda cid: {"state": "absent", "ip": None})
     monkeypatch.setattr(actions.tailnet, "present", lambda cid: True)
-    monkeypatch.setattr(actions.tailnet, "wait_for_tailscale",
-                        lambda cid, timeout=15.0, interval=1.5: "absent")
+    monkeypatch.setattr(actions.tailnet, "ensure_daemon",
+                        lambda cid, timeout=15.0: "absent")
     seen = {}
     out = actions.tailscale_gate(
         "acme",
@@ -276,6 +276,8 @@ def test_gate_speaks_when_tailscale_is_not_up_yet(rows, monkeypatch):
     assert out is not None
     assert out["state"] == "absent" and out["url"] is None
     assert any("tailscale" in line for line in seen["log"])
+    # It must try to *start* the daemon, not just wait for one nobody started.
+    assert any("starting tailscaled" in line for line in seen["log"])
     assert seen["attention"]["kind"] == "tailscale"
     assert seen["attention"]["url"] is None
     assert "Register" in seen["attention"]["detail"]
@@ -302,6 +304,28 @@ def test_gate_speaks_when_register_returns_no_login_url(rows, monkeypatch):
     assert any("tailscale" in line for line in seen["log"])
 
 
+def test_gate_restarts_the_post_start_hook_when_it_had_to_start_the_daemon(rows, monkeypatch):
+    """A daemon nobody started means postStartCommand never ran (a plain
+    `docker start` skips it), so the hook's other jobs — sshd, socat, the agent
+    — are missing too. Once the node reconnects from its persisted state, the
+    hook must be re-run rather than returning None as if all was well."""
+    monkeypatch.setattr(actions.containers, "list_devcontainers", lambda: [_container()])
+    monkeypatch.setattr(actions.tailnet, "facts",
+                        lambda cid: {"state": "absent", "ip": None})
+    monkeypatch.setattr(actions.tailnet, "present", lambda cid: True)
+    monkeypatch.setattr(actions.tailnet, "ensure_daemon",
+                        lambda cid, timeout=15.0: "connected")
+    seen = {}
+    monkeypatch.setattr(actions, "start_agent",
+                        lambda cid, ws: (seen.update(agent=ws) or True, "hook re-ran"))
+    out = actions.tailscale_gate(
+        "acme", lambda line: seen.setdefault("log", []).append(line),
+        lambda payload: seen.update(attention=payload))
+    assert out["connected"] is True and out["agent_started"] is True
+    assert seen["agent"] == "/w/acme"
+    assert any("starting tailscaled" in line for line in seen["log"])
+
+
 def test_gate_waits_for_a_starting_daemon_then_registers(rows, monkeypatch):
     """`absent` while tailscaled starts is not a dead end: wait, then take the
     login URL exactly as for any other logged-out node."""
@@ -309,8 +333,8 @@ def test_gate_waits_for_a_starting_daemon_then_registers(rows, monkeypatch):
     monkeypatch.setattr(actions.tailnet, "facts",
                         lambda cid: {"state": "absent", "ip": None})
     monkeypatch.setattr(actions.tailnet, "present", lambda cid: True)
-    monkeypatch.setattr(actions.tailnet, "wait_for_tailscale",
-                        lambda *a, **k: "logged_out")
+    monkeypatch.setattr(actions.tailnet, "ensure_daemon",
+                        lambda cid, timeout=15.0: "logged_out")
     monkeypatch.setattr(actions.tailnet, "register",
                         lambda cid, host: {"started": True,
                                            "url": "https://login.tailscale.com/a/x",
