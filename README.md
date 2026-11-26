@@ -44,6 +44,22 @@ This project includes the following capabilities:
    pytest -v
    ```
 
+### Checking the UI
+
+`cd web && npm run check:ui` returns a cheap text verdict on a running server
+instead of a screenshot. The script lives at `scripts/ui-check.mjs` in the
+repo root, so the npm script reaches up for it with `../` — npm runs with its
+CWD in `web/`, and a bare `scripts/ui-check.mjs` would resolve to
+`web/scripts/`, which does not exist.
+
+Tier 1 fetches the URL and asserts on the server-rendered HTML; tier 2 runs
+the page in a real browser when a Chrome DevTools endpoint answers, and
+reports console errors, failed requests and horizontal overflow. A run that
+cannot reach a browser says so rather than claiming the console was clean.
+
+`UI_BASE_URL` overrides the page URL (default `http://127.0.0.1:4173`) — point
+it at the python server when you want to check the real serving path.
+
 ## Install
 
 `install.py` does the whole thing in one shot: it clones or updates the
