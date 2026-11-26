@@ -11,7 +11,8 @@
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
     "check": "svelte-kit sync && svelte-check",
-    "check:watch": "svelte-kit sync && svelte-check --watch"
+    "check:watch": "svelte-kit sync && svelte-check --watch",
+    "check:ui": "node ../scripts/ui-check.mjs"
   },
   "keywords": [],
   "author": "",
